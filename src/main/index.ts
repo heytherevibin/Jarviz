@@ -8,6 +8,8 @@ import Store from 'electron-store'
 import { runAgent } from './agent/claude'
 import { synthesize } from './agent/tts'
 import { mergeStoredEnv } from './store-env'
+import { TranscriptStore } from './agent/transcript'
+import { setupAutoUpdater, quitAndInstallUpdate } from './updater'
 
 // ── Crash recovery — keep IPC alive on unexpected errors ─────────────────────
 process.on('unhandledRejection', (reason) => {
@@ -19,18 +21,21 @@ process.on('uncaughtException', (err) => {
 
 const store = new Store()
 mergeStoredEnv(store)
+const transcripts = new TranscriptStore(store)
 
 const DEFAULT_ORB_SIZE = 360
 const MIN_ORB_SIZE = 160
 const MAX_ORB_SIZE = 600
 const SNAP_THRESHOLD = 80
 const SNAP_MARGIN = 12
+const MINI_SIZE = 64
 
 let mainWindow: BrowserWindow | null = null
 let tray: Tray | null = null
 
 let dragOffset = { x: 0, y: 0 }
 let agentAbort: AbortController | null = null
+let miniMode = false
 
 // ── Agent session state ───────────────────────────────────────────────────────
 let conversationHistory: unknown[] = []
@@ -236,7 +241,10 @@ function registerMainProcessHandlers(): void {
 
   ipcMain.handle('agent:query', async (event, { text }: { text: string }) => {
     const now = Date.now()
-    if (now - lastQueryAt > SESSION_TIMEOUT_MS) conversationHistory = []
+    if (now - lastQueryAt > SESSION_TIMEOUT_MS) {
+      conversationHistory = []
+      transcripts.startNewSession()
+    }
     lastQueryAt = now
 
     const sendState = (state: string) => event.sender.send('agent:state', { state })
@@ -249,6 +257,7 @@ function registerMainProcessHandlers(): void {
         (state) => sendState(state),
       )
       conversationHistory = history.slice(-20)
+      transcripts.append(text, reply)
 
       sendState('speaking')
       const audioBuffer = await synthesize(reply)
@@ -268,6 +277,34 @@ function registerMainProcessHandlers(): void {
     }
   })
 
+  // ── Transcripts ──────────────────────────────────────────────────────────
+  ipcMain.handle('transcripts:list',  () => transcripts.list().map(s => ({
+    id: s.id, startedAt: s.startedAt, endedAt: s.endedAt, preview: s.preview, turns: s.turns.length,
+  })))
+  ipcMain.handle('transcripts:get',    (_, id: string)  => transcripts.get(id))
+  ipcMain.handle('transcripts:delete', (_, id: string)  => { transcripts.delete(id);  return true })
+  ipcMain.handle('transcripts:clear',  () => { transcripts.clearAll(); conversationHistory = []; return true })
+  ipcMain.handle('transcripts:newSession', () => {
+    transcripts.startNewSession()
+    conversationHistory = []
+    return true
+  })
+
+  // ── Screen / Mini-mode ──────────────────────────────────────────────────
+  ipcMain.handle('screen:primarySize', () => {
+    const d = screen.getPrimaryDisplay()
+    return { width: d.size.width, height: d.size.height, x: d.bounds.x, y: d.bounds.y }
+  })
+
+  ipcMain.handle('orb:setMini', (_, on: boolean) => {
+    setMiniMode(!!on)
+    return miniMode
+  })
+  ipcMain.handle('orb:getMini', () => miniMode)
+
+  // ── Updater ─────────────────────────────────────────────────────────────
+  ipcMain.handle('updater:install', () => { quitAndInstallUpdate(); return true })
+
   globalShortcut.register('CommandOrControl+Shift+J', () => {
     mainWindow?.webContents.send('jarviz:activate')
   })
@@ -275,6 +312,38 @@ function registerMainProcessHandlers(): void {
   globalShortcut.register('CommandOrControl+,', () => {
     mainWindow?.webContents.send('jarviz:open-settings')
   })
+
+  globalShortcut.register('CommandOrControl+Shift+T', () => {
+    mainWindow?.webContents.send('jarviz:open-transcripts')
+  })
+
+  globalShortcut.register('CommandOrControl+Shift+M', () => {
+    setMiniMode(!miniMode)
+  })
+}
+
+/** Toggle compact mini-mode: window shrinks to a small orb; click to restore. */
+function setMiniMode(on: boolean): void {
+  if (!mainWindow) return
+  miniMode = on
+  store.set('orb.miniMode', on)
+  if (on) {
+    const [ox, oy] = mainWindow.getPosition()
+    const [ow]    = mainWindow.getSize()
+    const dx = Math.round(ox + (ow - MINI_SIZE) / 2)
+    const dy = Math.round(oy + (ow - MINI_SIZE) / 2)
+    mainWindow.setSize(MINI_SIZE, MINI_SIZE)
+    mainWindow.setPosition(dx, dy)
+  } else {
+    const target = getOrbSize()
+    const [ox, oy] = mainWindow.getPosition()
+    const [ow]    = mainWindow.getSize()
+    const dx = Math.round(ox - (target - ow) / 2)
+    const dy = Math.round(oy - (target - ow) / 2)
+    mainWindow.setSize(target, target)
+    mainWindow.setPosition(dx, dy)
+  }
+  mainWindow.webContents.send('orb:miniChanged', miniMode)
 }
 
 function createWindow(): void {
@@ -462,6 +531,21 @@ function createTray(): void {
         accelerator: 'CommandOrControl+,',
         click: () => openSettingsFromMenu(),
       },
+      {
+        label: 'Transcripts…',
+        accelerator: 'CommandOrControl+Shift+T',
+        click: () => {
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            focusOrbWindow()
+            mainWindow.webContents.send('jarviz:open-transcripts')
+          }
+        },
+      },
+      {
+        label: 'Toggle mini mode',
+        accelerator: 'CommandOrControl+Shift+M',
+        click: () => setMiniMode(!miniMode),
+      },
       { label: 'Show Orb', click: () => focusOrbWindow() },
       { type: 'separator' },
       { role: 'quit' },
@@ -481,9 +565,21 @@ app.whenReady().then(() => {
     /* setName may vary by Electron build */
   }
 
+  // Restore most recent session if user re-opened within idle window
+  const restored = transcripts.restoreActive(SESSION_TIMEOUT_MS)
+  if (restored.length) {
+    conversationHistory = restored.map(t => ({ role: t.role, content: t.text })) as unknown[]
+    lastQueryAt = Date.now()
+    console.log(`[Main] restored ${restored.length} previous turns`)
+  }
+
+  // Restore mini-mode preference
+  miniMode = store.get('orb.miniMode', false) as boolean
+
   setApplicationMenu()
   createTray()
   createWindow()
+  setupAutoUpdater(() => mainWindow)
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()

@@ -1,8 +1,11 @@
 // Jarviz tool layer — autonomous agent capabilities.
+//
 // Includes:
 //   • Information tools (web/wiki/news/weather/finance/dictionary/calc/location)
 //   • Filesystem tools (read/list/search)
 //   • System action tools (shell, open app/url, clipboard, screenshot, notify, system_info)
+//   • Vision tools (see_screen returns image bytes for the LLM)
+//   • Input automation (type_text, key_combo, mouse_click, mouse_move, mouse_scroll)
 
 import { readdir, readFile, stat } from 'fs/promises'
 import { join, extname } from 'path'
@@ -19,6 +22,12 @@ const MAX_TOOL_OUTPUT = 2000
 const SHELL_TIMEOUT_MS = 15000
 const SHELL_MAX_BUFFER = 1024 * 256
 const TRANSIENT_CODES = new Set([429, 502, 503, 504])
+
+/** Structured tool result. Images are base64-encoded PNG bytes (no data: prefix). */
+export interface ToolResult {
+  text: string
+  images?: string[]
+}
 
 function truncate(s: string, max = MAX_TOOL_OUTPUT): string {
   if (s.length <= max) return s
@@ -235,8 +244,8 @@ export const TOOLS: Tool[] = [
     },
   },
   {
-    name: 'screenshot',
-    description: 'Capture a screenshot of the primary display and return a short description of what is visible. Use for screen context awareness.',
+    name: 'see_screen',
+    description: 'Capture the user\'s primary screen as an image and include it in the conversation so you can VISUALLY analyze what is on screen. Use this whenever the user asks you to look at, read, summarize, or interact with anything visible on their display.',
     input_schema: { type: 'object' as const, properties: {} },
   },
   {
@@ -256,46 +265,107 @@ export const TOOLS: Tool[] = [
     description: 'Get information about the user\'s machine: OS, architecture, memory, CPU, hostname.',
     input_schema: { type: 'object' as const, properties: {} },
   },
+  // ── Input automation (cross-platform via shell helpers) ────────────────────
+  {
+    name: 'type_text',
+    description: 'Type a string into the currently focused window as if the user typed it. Cross-platform: macOS uses AppleScript, Windows uses PowerShell SendKeys, Linux uses xdotool.',
+    input_schema: {
+      type: 'object' as const,
+      properties: { text: { type: 'string', description: 'Text to type' } },
+      required: ['text'],
+    },
+  },
+  {
+    name: 'key_combo',
+    description: 'Press a keyboard shortcut. Use modifier+key syntax e.g. "cmd+c", "ctrl+shift+t", "alt+tab", "enter", "escape".',
+    input_schema: {
+      type: 'object' as const,
+      properties: { combo: { type: 'string', description: 'Shortcut, e.g. "cmd+c"' } },
+      required: ['combo'],
+    },
+  },
+  {
+    name: 'mouse_click',
+    description: 'Click the mouse at absolute screen coordinates. Use after see_screen to act on a UI element.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        x: { type: 'number', description: 'X coordinate (0=left)' },
+        y: { type: 'number', description: 'Y coordinate (0=top)' },
+        button: { type: 'string', description: 'left | right | middle (default left)' },
+        double: { type: 'boolean', description: 'Double-click (default false)' },
+      },
+      required: ['x', 'y'],
+    },
+  },
+  {
+    name: 'mouse_move',
+    description: 'Move the mouse cursor to absolute screen coordinates without clicking.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        x: { type: 'number' },
+        y: { type: 'number' },
+      },
+      required: ['x', 'y'],
+    },
+  },
+  {
+    name: 'mouse_scroll',
+    description: 'Scroll the mouse wheel. Positive = scroll down, negative = scroll up.',
+    input_schema: {
+      type: 'object' as const,
+      properties: { amount: { type: 'number', description: 'Lines to scroll (negative = up)' } },
+      required: ['amount'],
+    },
+  },
 ]
 
 // ── Dispatcher ───────────────────────────────────────────────────────────────
 type ToolInput = Record<string, unknown>
 
-export async function executeTool(name: string, input: ToolInput): Promise<string> {
+export async function executeTool(name: string, input: ToolInput): Promise<ToolResult> {
   try {
     const preview = JSON.stringify(input)
     console.log(`[Tools] ${name}(${preview.length > 280 ? `${preview.slice(0, 280)}…` : preview})`)
-    let out: string
     switch (name) {
-      case 'web_search':       out = await webSearch(String(input.query ?? '')); break
-      case 'get_weather':      out = await getWeather(String(input.location ?? '')); break
-      case 'get_time':         out = await getTime(String(input.location ?? '')); break
-      case 'wikipedia':        out = await wikipedia(String(input.topic ?? '')); break
-      case 'get_news':         out = await getNews(Number(input.count ?? 5)); break
-      case 'currency_convert': out = await currencyConvert(Number(input.amount), String(input.from), String(input.to)); break
-      case 'crypto_price':     out = await cryptoPrice(String(input.coin ?? '')); break
-      case 'stock_price':      out = await stockPrice(String(input.symbol ?? '')); break
-      case 'define_word':      out = await defineWord(String(input.word ?? '')); break
-      case 'calculate':        out = calculate(String(input.expression ?? '')); break
-      case 'get_location':     out = await getLocation(); break
-      case 'read_file':        out = await readFileContents(String(input.path ?? '')); break
-      case 'list_directory':   out = await listDir(String(input.path ?? '')); break
-      case 'search_files':     out = await searchFiles(String(input.directory ?? ''), String(input.pattern ?? '')); break
-      case 'open_url':         out = await openUrl(String(input.url ?? '')); break
-      case 'open_app':         out = await openApp(String(input.name ?? '')); break
-      case 'open_path':        out = await openPath(String(input.path ?? '')); break
-      case 'run_command':      out = await runCommand(String(input.command ?? ''), input.cwd ? String(input.cwd) : undefined); break
-      case 'read_clipboard':   out = readClipboardText(); break
-      case 'write_clipboard':  out = writeClipboardText(String(input.text ?? '')); break
-      case 'screenshot':       out = await captureScreenshot(); break
-      case 'notify':           out = showNotification(String(input.title ?? ''), String(input.body ?? '')); break
-      case 'system_info':      out = getSystemInfo(); break
-      default:                 out = `Unknown tool: ${name}`
+      case 'web_search':       return text(await webSearch(String(input.query ?? '')))
+      case 'get_weather':      return text(await getWeather(String(input.location ?? '')))
+      case 'get_time':         return text(await getTime(String(input.location ?? '')))
+      case 'wikipedia':        return text(await wikipedia(String(input.topic ?? '')))
+      case 'get_news':         return text(await getNews(Number(input.count ?? 5)))
+      case 'currency_convert': return text(await currencyConvert(Number(input.amount), String(input.from), String(input.to)))
+      case 'crypto_price':     return text(await cryptoPrice(String(input.coin ?? '')))
+      case 'stock_price':      return text(await stockPrice(String(input.symbol ?? '')))
+      case 'define_word':      return text(await defineWord(String(input.word ?? '')))
+      case 'calculate':        return text(calculate(String(input.expression ?? '')))
+      case 'get_location':     return text(await getLocation())
+      case 'read_file':        return text(await readFileContents(String(input.path ?? '')))
+      case 'list_directory':   return text(await listDir(String(input.path ?? '')))
+      case 'search_files':     return text(await searchFiles(String(input.directory ?? ''), String(input.pattern ?? '')))
+      case 'open_url':         return text(await openUrl(String(input.url ?? '')))
+      case 'open_app':         return text(await openApp(String(input.name ?? '')))
+      case 'open_path':        return text(await openPath(String(input.path ?? '')))
+      case 'run_command':      return text(await runCommand(String(input.command ?? ''), input.cwd ? String(input.cwd) : undefined))
+      case 'read_clipboard':   return text(readClipboardText())
+      case 'write_clipboard':  return text(writeClipboardText(String(input.text ?? '')))
+      case 'see_screen':       return await captureScreenForVision()
+      case 'notify':           return text(showNotification(String(input.title ?? ''), String(input.body ?? '')))
+      case 'system_info':      return text(getSystemInfo())
+      case 'type_text':        return text(await typeText(String(input.text ?? '')))
+      case 'key_combo':        return text(await pressKeyCombo(String(input.combo ?? '')))
+      case 'mouse_click':      return text(await mouseClick(Number(input.x), Number(input.y), String(input.button ?? 'left'), Boolean(input.double)))
+      case 'mouse_move':       return text(await mouseMove(Number(input.x), Number(input.y)))
+      case 'mouse_scroll':     return text(await mouseScroll(Number(input.amount ?? 0)))
+      default:                 return text(`Unknown tool: ${name}`)
     }
-    return truncate(out)
   } catch (e) {
-    return `Tool ${name} failed: ${(e as Error).message}`
+    return text(`Tool ${name} failed: ${(e as Error).message}`)
   }
+}
+
+function text(s: string): ToolResult {
+  return { text: truncate(s) }
 }
 
 // ── Web search (Tavily → DuckDuckGo fallback) ────────────────────────────────
@@ -320,12 +390,10 @@ async function webSearch(query: string): Promise<string> {
       })
       return lines.join('\n')
     } catch (e) {
-      // fall through to DuckDuckGo
       console.warn('[Tools] Tavily failed, falling back:', (e as Error).message)
     }
   }
 
-  // DuckDuckGo Instant Answer — no key, sometimes empty for non-factoid queries
   const ddg = await fetchJSONRetry<{
     AbstractText?: string
     Abstract?: string
@@ -384,19 +452,14 @@ const WMO: Record<number, string> = {
   95: 'thunderstorm', 96: 'thunderstorm with hail', 99: 'severe thunderstorm',
 }
 
-// ── Time (resolve city → timezone via Open-Meteo geocoder) ───────────────────
 async function getTime(location: string): Promise<string> {
   const now = new Date()
-
-  // If looks like an IANA zone, use it directly
   if (/^[A-Za-z_]+\/[A-Za-z_]+/.test(location)) {
     return `${location}: ${now.toLocaleString('en-US', { timeZone: location, dateStyle: 'full', timeStyle: 'medium' })}`
   }
-
   if (!location) {
     return `Local time: ${now.toLocaleString('en-US', { dateStyle: 'full', timeStyle: 'medium' })}`
   }
-
   const geo = await fetchJSONRetry<{ results?: Array<{ timezone: string; name: string; country: string }> }>(
     `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(location)}&count=1`,
   )
@@ -405,7 +468,6 @@ async function getTime(location: string): Promise<string> {
   return `${place.name}, ${place.country} (${place.timezone}): ${now.toLocaleString('en-US', { timeZone: place.timezone, dateStyle: 'full', timeStyle: 'medium' })}`
 }
 
-// ── Wikipedia summary ────────────────────────────────────────────────────────
 async function wikipedia(topic: string): Promise<string> {
   if (!topic) return 'No topic given.'
   try {
@@ -419,7 +481,6 @@ async function wikipedia(topic: string): Promise<string> {
   }
 }
 
-// ── News (Hacker News top stories) ───────────────────────────────────────────
 async function getNews(count: number): Promise<string> {
   const n = Math.max(1, Math.min(10, count || 5))
   const ids = await fetchJSON<number[]>('https://hacker-news.firebaseio.com/v0/topstories.json')
@@ -435,7 +496,6 @@ async function getNews(count: number): Promise<string> {
     .join('\n')
 }
 
-// ── Currency conversion (open.er-api.com, no key) ────────────────────────────
 async function currencyConvert(amount: number, from: string, to: string): Promise<string> {
   if (!isFinite(amount)) return 'Invalid amount.'
   const f = (from || '').toUpperCase()
@@ -452,7 +512,6 @@ async function currencyConvert(amount: number, from: string, to: string): Promis
   return `${amount} ${f} = ${converted.toFixed(2)} ${t} (rate: 1 ${f} = ${rate} ${t})`
 }
 
-// ── Crypto (CoinGecko, no key) ───────────────────────────────────────────────
 async function cryptoPrice(coin: string): Promise<string> {
   if (!coin) return 'No coin specified.'
   const id = coin.toLowerCase().replace(/\s+/g, '-')
@@ -465,7 +524,6 @@ async function cryptoPrice(coin: string): Promise<string> {
   return `${coin}: $${info.usd.toLocaleString()}${change}`
 }
 
-// ── Stock (Yahoo Finance public quote endpoint, no key) ──────────────────────
 async function stockPrice(symbol: string): Promise<string> {
   if (!symbol) return 'No symbol specified.'
   const sym = symbol.toUpperCase()
@@ -482,7 +540,6 @@ async function stockPrice(symbol: string): Promise<string> {
   return `${m.longName ?? m.symbol} (${m.symbol}): ${m.regularMarketPrice.toFixed(2)} ${m.currency} (${sign}${change.toFixed(2)}, ${sign}${pct.toFixed(2)}%)`
 }
 
-// ── Dictionary ───────────────────────────────────────────────────────────────
 async function defineWord(word: string): Promise<string> {
   if (!word) return 'No word given.'
   try {
@@ -504,7 +561,6 @@ async function defineWord(word: string): Promise<string> {
   }
 }
 
-// ── Calculator (safe — no eval, only whitelisted tokens) ─────────────────────
 function calculate(expression: string): string {
   if (!expression) return 'No expression.'
   const cleaned = expression.replace(/\s+/g, '')
@@ -526,7 +582,6 @@ function calculate(expression: string): string {
   }
 }
 
-// ── IP geolocation ───────────────────────────────────────────────────────────
 async function getLocation(): Promise<string> {
   const data = await fetchJSON<{ city?: string; region?: string; country_name?: string; latitude?: number; longitude?: number; timezone?: string }>(
     'https://ipapi.co/json/',
@@ -535,7 +590,6 @@ async function getLocation(): Promise<string> {
   return `${data.city}, ${data.region}, ${data.country_name} (${data.timezone})`
 }
 
-// ── Filesystem ───────────────────────────────────────────────────────────────
 async function readFileContents(filePath: string): Promise<string> {
   const SAFE_EXTS = ['.txt', '.md', '.json', '.js', '.ts', '.tsx', '.jsx', '.py', '.sh', '.yaml', '.yml', '.toml', '.csv', '.html', '.css']
   const MAX_BYTES = 16_000
@@ -588,7 +642,6 @@ async function openUrl(url: string): Promise<string> {
   return `Opened ${target}`
 }
 
-/** Try to launch an app cross-platform. macOS: `open -a`, Windows: `start`, Linux: best-effort which/xdg-open. */
 async function openApp(name: string): Promise<string> {
   if (!name) return 'No app name given.'
   const safe = name.replace(/"/g, '\\"')
@@ -603,7 +656,6 @@ async function openApp(name: string): Promise<string> {
       await execAsync(`start "" "${safe}"`, { timeout: SHELL_TIMEOUT_MS, shell: 'cmd.exe' })
       return `Launching "${name}" (Windows).`
     }
-    // linux: try the binary directly, then a couple of common variants
     const candidates = [name, name.toLowerCase(), name.replace(/\s+/g, '').toLowerCase()]
     for (const c of candidates) {
       try {
@@ -629,7 +681,6 @@ async function openPath(p: string): Promise<string> {
 
 async function runCommand(command: string, cwd?: string): Promise<string> {
   if (!command) return 'No command given.'
-  // Lightweight footgun guard — refuse the most catastrophic patterns outright.
   const banned = [/\brm\s+-rf\s+\/(\s|$)/i, /\bmkfs\./i, /:\(\)\s*\{\s*:\|:&/i, /\bdd\s+if=.*of=\/dev\//i]
   if (banned.some(rx => rx.test(command))) {
     return `Refused: command appears destructive. Ask the user to run it manually if intended.`
@@ -663,29 +714,29 @@ function writeClipboardText(text: string): string {
   return `Copied ${text.length} characters to clipboard.`
 }
 
-async function captureScreenshot(): Promise<string> {
+/** Capture screen and return BOTH a text summary and a base64 PNG for vision. */
+async function captureScreenForVision(): Promise<ToolResult> {
   try {
-    const orbWin = BrowserWindow.getAllWindows()[0]
     const display = screen.getPrimaryDisplay()
     const { width, height } = display.size
+    // Cap to 1280×800 so we don't blow up token budgets
     const sources = await desktopCapturer.getSources({
       types: ['screen'],
-      thumbnailSize: { width: Math.min(1920, width), height: Math.min(1080, height) },
+      thumbnailSize: { width: Math.min(1280, width), height: Math.min(800, height) },
     })
     const primary = sources[0]
-    if (!primary) return 'No screen source available.'
+    if (!primary) return { text: 'No screen source available.' }
 
-    // Save to user's downloads folder for follow-up actions
-    const fs = await import('fs/promises')
-    const dest = join(app.getPath('downloads'), `jarviz-screenshot-${Date.now()}.png`)
     const png = primary.thumbnail.toPNG()
-    await fs.writeFile(dest, png)
+    const base64 = png.toString('base64')
 
     const dim = primary.thumbnail.getSize()
-    void orbWin
-    return `Captured screen "${primary.name}" (${dim.width}×${dim.height}). Saved to: ${dest}`
+    return {
+      text: `Captured screen "${primary.name}" at ${dim.width}×${dim.height} (${(png.length / 1024).toFixed(0)} KB). Image attached.`,
+      images: [base64],
+    }
   } catch (e) {
-    return `Screenshot failed: ${(e as Error).message}`
+    return { text: `Screenshot failed: ${(e as Error).message}` }
   }
 }
 
@@ -708,4 +759,196 @@ function getSystemInfo(): string {
     `CPU: ${cpuName} (${cpuList.length} cores)`,
     `Memory: ${freeGB} GB free / ${memGB} GB total`,
   ].join('\n')
+}
+
+// ── Input automation (cross-platform shell helpers, no native deps) ─────────
+
+/** Map a "modifier+key" combo to an AppleScript key code / keystroke. */
+function macKeystroke(combo: string): string {
+  const parts = combo.toLowerCase().split('+').map(s => s.trim())
+  const key = parts.pop() ?? ''
+  const mods: string[] = []
+  if (parts.includes('cmd') || parts.includes('command')) mods.push('command down')
+  if (parts.includes('ctrl') || parts.includes('control')) mods.push('control down')
+  if (parts.includes('alt')  || parts.includes('option'))  mods.push('option down')
+  if (parts.includes('shift'))                              mods.push('shift down')
+  const using = mods.length ? ` using {${mods.join(', ')}}` : ''
+
+  // Special keys via key code
+  const KEYCODES: Record<string, number> = {
+    enter: 36, return: 36, tab: 48, space: 49, escape: 53, esc: 53,
+    delete: 51, backspace: 51, up: 126, down: 125, left: 123, right: 124,
+    home: 115, end: 119, pageup: 116, pagedown: 121,
+    f1: 122, f2: 120, f3: 99, f4: 118, f5: 96, f6: 97, f7: 98, f8: 100,
+    f9: 101, f10: 109, f11: 103, f12: 111,
+  }
+  if (key in KEYCODES) return `key code ${KEYCODES[key]}${using}`
+  return `keystroke "${key.replace(/"/g, '\\"')}"${using}`
+}
+
+function winSendKeys(combo: string): string {
+  const parts = combo.toLowerCase().split('+').map(s => s.trim())
+  const key = parts.pop() ?? ''
+  let prefix = ''
+  if (parts.includes('ctrl') || parts.includes('control')) prefix += '^'
+  if (parts.includes('alt'))                                prefix += '%'
+  if (parts.includes('shift'))                              prefix += '+'
+  if (parts.includes('cmd') || parts.includes('command') || parts.includes('win')) prefix += '^' // ctrl as fallback
+  const SPECIAL: Record<string, string> = {
+    enter: '{ENTER}', return: '{ENTER}', tab: '{TAB}', space: ' ', escape: '{ESC}', esc: '{ESC}',
+    delete: '{DEL}', backspace: '{BACKSPACE}', up: '{UP}', down: '{DOWN}', left: '{LEFT}', right: '{RIGHT}',
+    home: '{HOME}', end: '{END}', pageup: '{PGUP}', pagedown: '{PGDN}',
+    f1: '{F1}', f2: '{F2}', f3: '{F3}', f4: '{F4}', f5: '{F5}', f6: '{F6}', f7: '{F7}', f8: '{F8}',
+    f9: '{F9}', f10: '{F10}', f11: '{F11}', f12: '{F12}',
+  }
+  return prefix + (SPECIAL[key] ?? key)
+}
+
+function xdotoolKey(combo: string): string {
+  // xdotool uses '+' separator and named keys
+  return combo.toLowerCase()
+    .replace(/\bcmd\b|\bcommand\b/g, 'super')
+    .replace(/\bctrl\b|\bcontrol\b/g, 'ctrl')
+    .replace(/\boption\b/g, 'alt')
+    .replace(/\benter\b|\breturn\b/g, 'Return')
+    .replace(/\btab\b/g, 'Tab')
+    .replace(/\bspace\b/g, 'space')
+    .replace(/\bescape\b|\besc\b/g, 'Escape')
+    .replace(/\bbackspace\b/g, 'BackSpace')
+    .replace(/\bdelete\b/g, 'Delete')
+    .replace(/\b(up|down|left|right)\b/g, (m) => m.charAt(0).toUpperCase() + m.slice(1))
+}
+
+async function typeText(text: string): Promise<string> {
+  if (!text) return 'No text to type.'
+  const safe = text.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
+  try {
+    if (process.platform === 'darwin') {
+      await execAsync(`osascript -e 'tell application "System Events" to keystroke "${safe}"'`, { timeout: SHELL_TIMEOUT_MS })
+      return `Typed ${text.length} chars (macOS).`
+    }
+    if (process.platform === 'win32') {
+      // Escape SendKeys metacharacters
+      const winSafe = text.replace(/[+^%~(){}\[\]]/g, m => `{${m}}`)
+      await execAsync(
+        `powershell -NoProfile -Command "[System.Reflection.Assembly]::LoadWithPartialName('System.Windows.Forms') | Out-Null; [System.Windows.Forms.SendKeys]::SendWait('${winSafe.replace(/'/g, "''")}')"`,
+        { timeout: SHELL_TIMEOUT_MS, shell: 'cmd.exe' },
+      )
+      return `Typed ${text.length} chars (Windows).`
+    }
+    // Linux: xdotool
+    await execAsync(`xdotool type --delay 12 -- "${safe}"`, { timeout: SHELL_TIMEOUT_MS })
+    return `Typed ${text.length} chars (Linux).`
+  } catch (e) {
+    return `type_text failed: ${(e as Error).message}. On Linux install \`xdotool\`; on macOS grant Accessibility permission to the Jarviz app in System Settings → Privacy & Security.`
+  }
+}
+
+async function pressKeyCombo(combo: string): Promise<string> {
+  if (!combo) return 'No combo given.'
+  try {
+    if (process.platform === 'darwin') {
+      const stmt = macKeystroke(combo)
+      await execAsync(`osascript -e 'tell application "System Events" to ${stmt}'`, { timeout: SHELL_TIMEOUT_MS })
+      return `Pressed ${combo} (macOS).`
+    }
+    if (process.platform === 'win32') {
+      const keys = winSendKeys(combo)
+      await execAsync(
+        `powershell -NoProfile -Command "[System.Reflection.Assembly]::LoadWithPartialName('System.Windows.Forms') | Out-Null; [System.Windows.Forms.SendKeys]::SendWait('${keys.replace(/'/g, "''")}')"`,
+        { timeout: SHELL_TIMEOUT_MS, shell: 'cmd.exe' },
+      )
+      return `Pressed ${combo} (Windows).`
+    }
+    const xkey = xdotoolKey(combo)
+    await execAsync(`xdotool key ${xkey}`, { timeout: SHELL_TIMEOUT_MS })
+    return `Pressed ${combo} (Linux).`
+  } catch (e) {
+    return `key_combo failed: ${(e as Error).message}. Linux needs \`xdotool\`; macOS needs Accessibility permission for Jarviz.`
+  }
+}
+
+async function mouseClick(x: number, y: number, button: string, dbl: boolean): Promise<string> {
+  if (!isFinite(x) || !isFinite(y)) return 'Invalid coordinates.'
+  const btn = (button || 'left').toLowerCase()
+  try {
+    if (process.platform === 'darwin') {
+      const click = dbl ? 'click {' + Math.round(x) + ', ' + Math.round(y) + '} times 2' : `click at {${Math.round(x)}, ${Math.round(y)}}`
+      // AppleScript "click at" emulates a left click; for right click use control-click
+      if (btn === 'right') {
+        await execAsync(`osascript -e 'tell application "System Events" to (click at {${Math.round(x)}, ${Math.round(y)}}) using {control down}'`, { timeout: SHELL_TIMEOUT_MS })
+      } else {
+        await execAsync(`osascript -e 'tell application "System Events" to ${click}'`, { timeout: SHELL_TIMEOUT_MS })
+      }
+      return `Clicked at ${x},${y} (macOS).`
+    }
+    if (process.platform === 'win32') {
+      const ps = `Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point(${Math.round(x)},${Math.round(y)}); ` +
+        `Add-Type -MemberDefinition '[DllImport(\\"user32.dll\\")] public static extern void mouse_event(uint dwFlags, uint dx, uint dy, uint dwData, int dwExtraInfo);' -Name MouseEvent -Namespace M; ` +
+        (btn === 'right'
+          ? `[M.MouseEvent]::mouse_event(0x0008, 0, 0, 0, 0); Start-Sleep -Milliseconds 30; [M.MouseEvent]::mouse_event(0x0010, 0, 0, 0, 0)`
+          : `[M.MouseEvent]::mouse_event(0x0002, 0, 0, 0, 0); Start-Sleep -Milliseconds 30; [M.MouseEvent]::mouse_event(0x0004, 0, 0, 0, 0)` +
+            (dbl ? `; Start-Sleep -Milliseconds 60; [M.MouseEvent]::mouse_event(0x0002, 0, 0, 0, 0); Start-Sleep -Milliseconds 30; [M.MouseEvent]::mouse_event(0x0004, 0, 0, 0, 0)` : ''))
+      await execAsync(`powershell -NoProfile -Command "${ps.replace(/"/g, '\\"')}"`, { timeout: SHELL_TIMEOUT_MS, shell: 'cmd.exe' })
+      return `Clicked at ${x},${y} (Windows).`
+    }
+    const btnNum = btn === 'right' ? 3 : btn === 'middle' ? 2 : 1
+    const repeat = dbl ? `--repeat 2 --delay 60 ` : ''
+    await execAsync(`xdotool mousemove ${Math.round(x)} ${Math.round(y)} ${repeat}click ${btnNum}`, { timeout: SHELL_TIMEOUT_MS })
+    return `Clicked at ${x},${y} (Linux).`
+  } catch (e) {
+    return `mouse_click failed: ${(e as Error).message}. Linux needs xdotool; macOS needs Accessibility permission.`
+  }
+}
+
+async function mouseMove(x: number, y: number): Promise<string> {
+  if (!isFinite(x) || !isFinite(y)) return 'Invalid coordinates.'
+  try {
+    if (process.platform === 'darwin') {
+      // No native AppleScript "move"; use cliclick if installed, else fall back to a no-button click sequence.
+      try {
+        await execAsync(`cliclick m:${Math.round(x)},${Math.round(y)}`, { timeout: SHELL_TIMEOUT_MS })
+        return `Moved cursor to ${x},${y} (macOS via cliclick).`
+      } catch {
+        return `mouse_move on macOS requires \`brew install cliclick\`. (clicking at coords still works.)`
+      }
+    }
+    if (process.platform === 'win32') {
+      const ps = `Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point(${Math.round(x)},${Math.round(y)})`
+      await execAsync(`powershell -NoProfile -Command "${ps}"`, { timeout: SHELL_TIMEOUT_MS, shell: 'cmd.exe' })
+      return `Moved cursor to ${x},${y} (Windows).`
+    }
+    await execAsync(`xdotool mousemove ${Math.round(x)} ${Math.round(y)}`, { timeout: SHELL_TIMEOUT_MS })
+    return `Moved cursor to ${x},${y} (Linux).`
+  } catch (e) {
+    return `mouse_move failed: ${(e as Error).message}`
+  }
+}
+
+async function mouseScroll(amount: number): Promise<string> {
+  if (!isFinite(amount) || amount === 0) return 'Invalid scroll amount.'
+  const lines = Math.max(1, Math.min(20, Math.abs(Math.round(amount))))
+  const dir = amount > 0 ? 'down' : 'up'
+  try {
+    if (process.platform === 'darwin') {
+      const stmt = (dir === 'down' ? 'scroll down' : 'scroll up')
+      // Best effort via AppleScript key code (page-down/up not perfect but functional)
+      const code = dir === 'down' ? 121 : 116
+      for (let i = 0; i < lines; i++) {
+        await execAsync(`osascript -e 'tell application "System Events" to key code ${code}'`, { timeout: 4000 })
+      }
+      return `Scrolled ${stmt} ${lines}× (macOS).`
+    }
+    if (process.platform === 'win32') {
+      const delta = (dir === 'down' ? -1 : 1) * 120 * lines
+      const ps = `Add-Type -MemberDefinition '[DllImport(\\"user32.dll\\")] public static extern void mouse_event(uint dwFlags, uint dx, uint dy, int dwData, int dwExtraInfo);' -Name MEvent -Namespace W; [W.MEvent]::mouse_event(0x0800, 0, 0, ${delta}, 0)`
+      await execAsync(`powershell -NoProfile -Command "${ps.replace(/"/g, '\\"')}"`, { timeout: SHELL_TIMEOUT_MS, shell: 'cmd.exe' })
+      return `Scrolled ${dir} ${lines}× (Windows).`
+    }
+    const btnNum = dir === 'down' ? 5 : 4
+    await execAsync(`xdotool click --repeat ${lines} --delay 30 ${btnNum}`, { timeout: SHELL_TIMEOUT_MS })
+    return `Scrolled ${dir} ${lines}× (Linux).`
+  } catch (e) {
+    return `mouse_scroll failed: ${(e as Error).message}`
+  }
 }

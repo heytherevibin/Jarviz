@@ -9,17 +9,19 @@ const ENV_KEYS = [
   'XAI_API_KEY',
   'TAVILY_API_KEY',
   'ELEVENLABS_API_KEY',
+  'PICOVOICE_ACCESS_KEY',
 ] as const
 
 const ENV_KEY_HINTS: Record<string, string> = {
-  EMERGENT_LLM_KEY:  'Universal key (sk-emergent-…) — proxies Claude / GPT / Gemini.',
-  ANTHROPIC_API_KEY: 'Direct Anthropic key (console.anthropic.com).',
-  OPENAI_API_KEY:    'Direct OpenAI key (platform.openai.com/api-keys).',
-  GEMINI_API_KEY:    'Direct Google AI Studio key (aistudio.google.com/apikey).',
-  GROQ_API_KEY:      'Free fast Llama models (console.groq.com).',
-  XAI_API_KEY:       'xAI Grok (console.x.ai).',
-  TAVILY_API_KEY:    'Optional — richer web search results.',
-  ELEVENLABS_API_KEY:'Optional — premium voice output.',
+  EMERGENT_LLM_KEY:    'Universal key (sk-emergent-…) — proxies Claude / GPT / Gemini.',
+  ANTHROPIC_API_KEY:   'Direct Anthropic key (console.anthropic.com).',
+  OPENAI_API_KEY:      'Direct OpenAI key (platform.openai.com/api-keys).',
+  GEMINI_API_KEY:      'Direct Google AI Studio key (aistudio.google.com/apikey).',
+  GROQ_API_KEY:        'Free fast Llama models (console.groq.com).',
+  XAI_API_KEY:         'xAI Grok (console.x.ai).',
+  TAVILY_API_KEY:      'Optional — richer web search results.',
+  ELEVENLABS_API_KEY:  'Optional — premium voice output.',
+  PICOVOICE_ACCESS_KEY:'Optional — efficient hardware-grade "Jarvis" wake word (console.picovoice.ai).',
 }
 
 const PROVIDER_MODELS: Record<string, { value: string; label: string }[]> = {
@@ -54,15 +56,20 @@ export function SettingsOverlay({ open, onClose }: Props) {
   const [whisperModel, setWhisperModel] = useState('base')
   const [keys, setKeys] = useState<Record<string, string>>({})
   const [saved, setSaved] = useState(false)
+  const [miniMode, setMiniMode] = useState(false)
 
   useEffect(() => {
     if (!open) return
-    window.jarviz.settings.get().then(s => {
+    Promise.all([
+      window.jarviz.settings.get(),
+      window.jarviz.getMini(),
+    ]).then(([s, mini]) => {
       setLlmBackend(s.llmBackend || 'emergent')
       setWhisperModel(s.whisperModel || 'base')
       setKeys({ ...s.envOverrides })
       setEmergentProvider(s.envOverrides.EMERGENT_PROVIDER || 'anthropic')
       setEmergentModel(s.envOverrides.EMERGENT_MODEL || 'claude-sonnet-4-5-20250929')
+      setMiniMode(!!mini)
       setSaved(false)
     }).catch(console.error)
   }, [open])
@@ -86,6 +93,12 @@ export function SettingsOverlay({ open, onClose }: Props) {
       setSaved(true)
       setTimeout(() => setSaved(false), 1800)
     }).catch(console.error)
+  }
+
+  const toggleMini = (): void => {
+    const next = !miniMode
+    setMiniMode(next)
+    window.jarviz.setMini(next).catch(console.error)
   }
 
   if (!open) return null
@@ -214,6 +227,22 @@ export function SettingsOverlay({ open, onClose }: Props) {
           <option value="medium">medium  · ~1.5 GB · high accuracy</option>
           <option value="large-v3">large-v3  · ~3 GB · best accuracy</option>
         </select>
+
+        <SectionLabel>Display</SectionLabel>
+        <button
+          type="button"
+          data-testid="settings-mini-toggle"
+          onClick={toggleMini}
+          style={{
+            ...selectStyle,
+            background: miniMode ? 'rgba(120,80,220,0.25)' : 'rgba(0,0,0,0.35)',
+            border: `1px solid ${miniMode ? 'rgba(160,120,255,0.4)' : 'rgba(255,255,255,0.12)'}`,
+            cursor: 'pointer',
+            textAlign: 'left',
+          }}
+        >
+          {miniMode ? '◉' : '○'}  Mini mode (Cmd/Ctrl+Shift+M) — {miniMode ? 'on, click orb to expand' : 'off'}
+        </button>
 
         <SectionLabel>API keys</SectionLabel>
         <div style={{ ...hintStyle, marginBottom: 8 }}>

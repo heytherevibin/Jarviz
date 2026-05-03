@@ -21,23 +21,48 @@ const jarviz = {
   dragEnd: () => ipcRenderer.send('drag:end'),
 
   onActivate: (cb: () => void) => {
-    const handler = () => cb()
+    const handler = (): void => cb()
     ipcRenderer.on('jarviz:activate', handler)
     return () => ipcRenderer.removeListener('jarviz:activate', handler)
   },
 
   onOpenSettings: (cb: () => void) => {
-    const handler = () => cb()
+    const handler = (): void => cb()
     ipcRenderer.on('jarviz:open-settings', handler)
     return () => ipcRenderer.removeListener('jarviz:open-settings', handler)
+  },
+
+  onOpenTranscripts: (cb: () => void) => {
+    const handler = (): void => cb()
+    ipcRenderer.on('jarviz:open-transcripts', handler)
+    return () => ipcRenderer.removeListener('jarviz:open-transcripts', handler)
+  },
+
+  onMiniChanged: (cb: (mini: boolean) => void) => {
+    const handler = (_: Electron.IpcRendererEvent, mini: boolean): void => cb(mini)
+    ipcRenderer.on('orb:miniChanged', handler)
+    return () => ipcRenderer.removeListener('orb:miniChanged', handler)
+  },
+
+  onUpdaterStatus: (cb: (s: { state: string; progress?: number; message?: string; info?: unknown }) => void) => {
+    const handler = (_: Electron.IpcRendererEvent, s: { state: string; progress?: number; message?: string; info?: unknown }): void => cb(s)
+    ipcRenderer.on('updater:status', handler)
+    return () => ipcRenderer.removeListener('updater:status', handler)
   },
 
   log: (msg: string) => ipcRenderer.send('renderer:log', msg),
 
   orbResize: (size: number) => ipcRenderer.send('orb:resize', { size }),
   orbGetSize: (): Promise<number> => ipcRenderer.invoke('orb:getSize'),
+  setMini: (on: boolean): Promise<boolean> => ipcRenderer.invoke('orb:setMini', on),
+  getMini: (): Promise<boolean> => ipcRenderer.invoke('orb:getMini'),
+
+  primaryScreenSize: (): Promise<{ width: number; height: number; x: number; y: number }> =>
+    ipcRenderer.invoke('screen:primarySize'),
 
   getWhisperModel: (): Promise<string> => ipcRenderer.invoke('config:whisperModel'),
+
+  installUpdate: (): Promise<boolean> => ipcRenderer.invoke('updater:install'),
 
   settings: {
     get: (): Promise<{
@@ -53,6 +78,16 @@ const jarviz = {
     }): Promise<boolean> => ipcRenderer.invoke('settings:set', patch),
   },
 
+  transcripts: {
+    list:       (): Promise<Array<{ id: string; startedAt: number; endedAt: number; preview: string; turns: number }>> =>
+      ipcRenderer.invoke('transcripts:list'),
+    get:        (id: string): Promise<{ id: string; startedAt: number; endedAt: number; preview: string; turns: Array<{ role: string; text: string; ts: number }> } | null> =>
+      ipcRenderer.invoke('transcripts:get', id),
+    delete:     (id: string): Promise<boolean> => ipcRenderer.invoke('transcripts:delete', id),
+    clear:      (): Promise<boolean> => ipcRenderer.invoke('transcripts:clear'),
+    newSession: (): Promise<boolean> => ipcRenderer.invoke('transcripts:newSession'),
+  },
+
   agent: {
     query: (text: string): Promise<{ text: string; audio: number[] | null }> =>
       invokeWithTimeout('agent:query', { text }),
@@ -60,7 +95,7 @@ const jarviz = {
     cancel: () => ipcRenderer.send('agent:cancel'),
 
     onState: (cb: (state: string) => void) => {
-      const handler = (_: Electron.IpcRendererEvent, { state }: { state: string }) => cb(state)
+      const handler = (_: Electron.IpcRendererEvent, { state }: { state: string }): void => cb(state)
       ipcRenderer.on('agent:state', handler)
       return () => ipcRenderer.removeListener('agent:state', handler)
     },

@@ -1,10 +1,10 @@
 import Groq from 'groq-sdk'
 import type Anthropic from '@anthropic-ai/sdk'
-import { TOOLS, executeTool } from './tools'
+import { TOOLS, executeTool, type ToolResult } from './tools'
 
 type StateCallback = (state: 'thinking' | 'searching') => void
 
-const LLM_TIMEOUT_MS = 35000
+const LLM_TIMEOUT_MS = 45000
 const RETRY_DELAY_MS = 2000
 const MAX_TURNS = 10
 
@@ -41,9 +41,9 @@ async function withRetry<T>(
 }
 
 const SYSTEM = `You are Jarviz, a fully autonomous desktop AI agent modeled after Iron Man's JARVIS.
-You are precise, confident, and speak with understated authority. You can see, hear, and act on the user's machine.
+You are precise, confident, and speak with understated authority. You can SEE the user's screen, hear them, and act on their machine.
 
-You have a rich toolset — use it aggressively and chain tools together to complete multi-step requests:
+You have a rich toolset — chain tools aggressively to complete multi-step requests:
 
 INFORMATION
 - web_search, wikipedia, get_news, get_weather, get_time, get_location, define_word, calculate
@@ -54,18 +54,20 @@ USER MACHINE
 - read_clipboard, write_clipboard
 - system_info — OS, CPU, memory of the user's machine
 
-ACTIONS (you can DO things, not just answer)
-- open_url — open a webpage in the user's default browser
-- open_app — launch a desktop app by name (e.g. "Spotify", "Calculator", "Visual Studio Code")
-- open_path — open a file or folder using the OS default app
-- run_command — execute a shell command (use for git, ls, mkdir, ffmpeg, etc.)
-- screenshot — capture the primary display, save it, and read its dimensions
-- notify — send a native desktop notification
+ACTIONS
+- open_url, open_app, open_path
+- run_command — execute a shell command (git, ls, mkdir, ffmpeg…)
+- notify — native desktop notification
+
+VISION & INPUT (the JARVIS superpower)
+- see_screen — captures the primary display and ATTACHES THE IMAGE so you can visually analyze what is shown. Use whenever the user asks you to "look at", "read", "summarize", "click", or otherwise interact with anything on screen.
+- type_text — type a string into the focused window
+- key_combo — press a keyboard shortcut like "cmd+c", "ctrl+t", "alt+tab"
+- mouse_click(x, y) / mouse_move(x, y) / mouse_scroll(amount) — control the cursor
 
 AGENT BEHAVIOR
-- Always pick a tool when the answer requires current/factual data or a real action — never guess.
-- For multi-step requests, call as many tools as needed in sequence (e.g. screenshot → web_search → open_url).
-- Be decisive. If asked "open Spotify and play lo-fi", call open_app then web_search/open_url for the playlist.
+- Always pick a tool when the answer requires current/factual data, screen content, or a real action — never guess.
+- For multi-step requests, call as many tools as needed in sequence (e.g. see_screen → identify the button → mouse_click).
 - After tool returns, synthesize into ONE clear spoken answer with the actual numbers / outcome.
 - Keep every response under 3 sentences — you are a voice assistant, not a document.
 - Never say "As an AI" or similar disclaimers. Address the user directly.
@@ -78,6 +80,18 @@ const GROQ_TOOLS: Groq.Chat.ChatCompletionTool[] = TOOLS.map(t => ({
   type: 'function' as const,
   function: { name: t.name, description: t.description, parameters: t.input_schema },
 }))
+
+// Helper: turn a tool result into a follow-up user message containing image(s).
+// OpenAI-compatible providers (incl. Emergent proxy) accept content arrays with image_url parts.
+function imageFollowupMessage(toolName: string, images: string[]): Message {
+  const blocks: Array<{ type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } }> = [
+    { type: 'text', text: `Image attached from tool ${toolName}. Analyze it and continue.` },
+  ]
+  for (const b64 of images) {
+    blocks.push({ type: 'image_url', image_url: { url: `data:image/png;base64,${b64}` } })
+  }
+  return { role: 'user', content: blocks } as unknown as Message
+}
 
 // ── Generic OpenAI-compatible loop (used by Emergent + xAI + native OpenAI) ──
 async function runOpenAICompatible(
@@ -116,13 +130,17 @@ async function runOpenAICompatible(
 
     if (msg.tool_calls?.length) {
       onState('searching')
+      const followups: Message[] = []
       for (const call of msg.tool_calls) {
         if (call.type !== 'function') continue
         let args: Record<string, unknown> = {}
         try { args = JSON.parse(call.function.arguments || '{}') } catch { /* empty */ }
         const result = await executeTool(call.function.name, args)
-        messages.push({ role: 'tool', tool_call_id: call.id, content: result } as Message)
+        messages.push({ role: 'tool', tool_call_id: call.id, content: result.text } as Message)
+        if (result.images?.length) followups.push(imageFollowupMessage(call.function.name, result.images))
       }
+      // Push image follow-ups after all tool messages so the model sees the screenshots before its next turn
+      for (const m of followups) messages.push(m)
       onState('thinking')
     }
   }
@@ -130,7 +148,7 @@ async function runOpenAICompatible(
   return { reply: 'I was unable to complete that request.', messages }
 }
 
-// ── Groq backend ─────────────────────────────────────────────────────────────
+// ── Groq backend (no vision support — text-only models) ─────────────────────
 async function runGroq(
   messages: Message[],
   onState: StateCallback,
@@ -159,8 +177,11 @@ async function runGroq(
     if (finish === 'tool_calls' && msg.tool_calls?.length) {
       onState('searching')
       for (const call of msg.tool_calls) {
-        const result = await executeTool(call.function.name, JSON.parse(call.function.arguments))
-        messages.push({ role: 'tool', tool_call_id: call.id, content: result })
+        const result: ToolResult = await executeTool(call.function.name, JSON.parse(call.function.arguments))
+        const note = result.images?.length
+          ? `${result.text}\n[Note: image was captured but Groq Llama does not support vision; switch backend for visual analysis.]`
+          : result.text
+        messages.push({ role: 'tool', tool_call_id: call.id, content: note })
       }
       onState('thinking')
     }
@@ -178,7 +199,28 @@ function openAiToAnthropicMessages(messages: Message[]): Anthropic.Messages.Mess
     if (m.role === 'system') { i++; continue }
 
     if (m.role === 'user') {
-      out.push({ role: 'user', content: typeof m.content === 'string' ? m.content : '' })
+      const content = m.content
+      if (typeof content === 'string') {
+        out.push({ role: 'user', content })
+      } else if (Array.isArray(content)) {
+        // Convert OpenAI-format content array (text + image_url) to Anthropic blocks
+        const blocks: Anthropic.Messages.ContentBlockParam[] = []
+        for (const part of content as unknown as Array<Record<string, unknown>>) {
+          if (part.type === 'text') {
+            blocks.push({ type: 'text', text: String((part as { text: string }).text) })
+          } else if (part.type === 'image_url') {
+            const url = String(((part as { image_url: { url: string } }).image_url ?? {}).url ?? '')
+            const m = /^data:(image\/[^;]+);base64,(.+)$/.exec(url)
+            if (m) {
+              blocks.push({
+                type: 'image',
+                source: { type: 'base64', media_type: m[1] as 'image/png' | 'image/jpeg' | 'image/webp' | 'image/gif', data: m[2] },
+              })
+            }
+          }
+        }
+        out.push({ role: 'user', content: blocks })
+      }
       i++; continue
     }
 
@@ -266,10 +308,13 @@ async function runAnthropic(
 
     messages.push({ role: 'assistant', content: replyText || null, tool_calls: oaiToolCalls } as Message)
 
+    const followups: Message[] = []
     for (const tu of toolUses) {
-      const result = await executeTool(tu.name, (tu.input ?? {}) as Record<string, unknown>)
-      messages.push({ role: 'tool', tool_call_id: tu.id, content: result } as Message)
+      const result: ToolResult = await executeTool(tu.name, (tu.input ?? {}) as Record<string, unknown>)
+      messages.push({ role: 'tool', tool_call_id: tu.id, content: result.text } as Message)
+      if (result.images?.length) followups.push(imageFollowupMessage(tu.name, result.images))
     }
+    for (const m of followups) messages.push(m)
 
     onState('thinking')
   }
@@ -282,6 +327,7 @@ type GeminiPart =
   | { text: string }
   | { functionCall: { name: string; args: Record<string, unknown> } }
   | { functionResponse: { name: string; response: { result: string } } }
+  | { inlineData: { mimeType: string; data: string } }
 
 type GeminiContent = { role: 'user' | 'model'; parts: GeminiPart[] }
 
@@ -297,10 +343,23 @@ async function runGemini(
 
   const contents: GeminiContent[] = messages
     .filter(m => m.role === 'user' || m.role === 'assistant')
-    .map(m => ({
-      role:  m.role === 'assistant' ? 'model' : 'user',
-      parts: [{ text: String(m.content ?? '') }],
-    }))
+    .map(m => {
+      const role: 'user' | 'model' = m.role === 'assistant' ? 'model' : 'user'
+      // Convert OpenAI-format content array (text + image_url) → Gemini parts
+      if (Array.isArray(m.content)) {
+        const parts: GeminiPart[] = []
+        for (const part of m.content as unknown as Array<Record<string, unknown>>) {
+          if (part.type === 'text') parts.push({ text: String((part as { text: string }).text) })
+          else if (part.type === 'image_url') {
+            const url2 = String(((part as { image_url: { url: string } }).image_url ?? {}).url ?? '')
+            const mt = /^data:(image\/[^;]+);base64,(.+)$/.exec(url2)
+            if (mt) parts.push({ inlineData: { mimeType: mt[1], data: mt[2] } })
+          }
+        }
+        return { role, parts: parts.length ? parts : [{ text: '' }] }
+      }
+      return { role, parts: [{ text: String(m.content ?? '') }] }
+    })
 
   const functionDeclarations = TOOLS.map(t => ({
     name:        t.name,
@@ -356,13 +415,20 @@ async function runGemini(
     contents.push({ role: 'model', parts })
 
     const toolResponses: GeminiPart[] = []
+    const imageParts: GeminiPart[] = []
     for (const fc of fnCalls) {
-      const result = await executeTool(fc.functionCall.name, fc.functionCall.args)
+      const result: ToolResult = await executeTool(fc.functionCall.name, fc.functionCall.args)
       toolResponses.push({
-        functionResponse: { name: fc.functionCall.name, response: { result } },
+        functionResponse: { name: fc.functionCall.name, response: { result: result.text } },
       })
+      if (result.images?.length) {
+        for (const b64 of result.images) imageParts.push({ inlineData: { mimeType: 'image/png', data: b64 } })
+      }
     }
     contents.push({ role: 'user', parts: toolResponses })
+    if (imageParts.length) {
+      contents.push({ role: 'user', parts: [{ text: 'Image(s) attached from tool. Analyze and continue.' }, ...imageParts] })
+    }
     onState('thinking')
   }
 
@@ -370,7 +436,6 @@ async function runGemini(
 }
 
 // ── Emergent Universal backend ───────────────────────────────────────────────
-// Single key works for OpenAI / Anthropic / Gemini via OpenAI-compatible proxy.
 async function runEmergent(
   messages: Message[],
   onState: StateCallback,
@@ -394,7 +459,6 @@ async function runEmergent(
   })
 }
 
-// ── xAI Grok backend (OpenAI-compatible) ─────────────────────────────────────
 async function runXAI(
   messages: Message[],
   onState: StateCallback,
@@ -407,7 +471,6 @@ async function runXAI(
   })
 }
 
-// ── Native OpenAI backend ────────────────────────────────────────────────────
 async function runOpenAI(
   messages: Message[],
   onState: StateCallback,
@@ -444,7 +507,6 @@ export async function runAgent(
     xai:       process.env.XAI_API_KEY       ? () => runXAI(messages, onState)       : null,
   }
 
-  // Preferred order — chosen backend first, then sensible fallback chain
   const fallbackOrder = ['emergent', 'anthropic', 'openai', 'gemini', 'groq', 'xai']
   const order = [backend, ...fallbackOrder.filter(b => b !== backend)]
 

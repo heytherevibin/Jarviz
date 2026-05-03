@@ -4,9 +4,11 @@ import { SoundEngine } from './audio/SoundEngine'
 import { AudioManager } from './audio/AudioManager'
 import { loadWhisper, transcribeBlob } from './voice/LocalSTT'
 import { LocalWakeWord } from './voice/LocalWakeWord'
+import { PicovoiceWakeWord } from './voice/PicovoiceWakeWord'
 import { speakLocal, stopLocalSpeech, isSpeakingLocal } from './voice/LocalTTS'
 import { JarvizFSM, JarvizState } from './state/JarvizFSM'
 import { SettingsOverlay } from './SettingsOverlay'
+import { TranscriptOverlay } from './TranscriptOverlay'
 
 declare global {
   interface Window {
@@ -18,8 +20,15 @@ declare global {
       log:        (msg: string) => void
       orbResize:  (size: number) => void
       orbGetSize: () => Promise<number>
+      setMini:    (on: boolean) => Promise<boolean>
+      getMini:    () => Promise<boolean>
+      primaryScreenSize: () => Promise<{ width: number; height: number; x: number; y: number }>
       getWhisperModel: () => Promise<string>
-      onOpenSettings: (cb: () => void) => () => void
+      installUpdate: () => Promise<boolean>
+      onOpenSettings:    (cb: () => void) => () => void
+      onOpenTranscripts: (cb: () => void) => () => void
+      onMiniChanged:     (cb: (mini: boolean) => void) => () => void
+      onUpdaterStatus:   (cb: (s: { state: string; progress?: number; message?: string }) => void) => () => void
       settings: {
         get: () => Promise<{ envOverrides: Record<string, string>; llmBackend: string; whisperModel: string }>
         set: (patch: {
@@ -27,6 +36,13 @@ declare global {
           llmBackend?: string
           whisperModel?: string
         }) => Promise<boolean>
+      }
+      transcripts: {
+        list:       () => Promise<Array<{ id: string; startedAt: number; endedAt: number; preview: string; turns: number }>>
+        get:        (id: string) => Promise<{ id: string; startedAt: number; endedAt: number; preview: string; turns: Array<{ role: string; text: string; ts: number }> } | null>
+        delete:     (id: string) => Promise<boolean>
+        clear:      () => Promise<boolean>
+        newSession: () => Promise<boolean>
       }
       agent: {
         query:   (text: string) => Promise<{ text: string; audio: number[] | null }>
@@ -327,11 +343,14 @@ export default function App() {
   const fftRef       = useRef<Uint8Array | null>(null)
   const mouseDownPos = useRef<{ x: number; y: number } | null>(null)
   const wakeWordRef  = useRef<LocalWakeWord | null>(null)
+  const picoRef      = useRef<PicovoiceWakeWord | null>(null)
   const stopPlaybackRef = useRef<(() => void) | null>(null)
   const followUpTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const [caption, setCaption] = useState({ phase: 'Ready', user: '', reply: '' })
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [transcriptsOpen, setTranscriptsOpen] = useState(false)
+  const [updateBanner, setUpdateBanner] = useState<{ state: string; progress?: number; message?: string } | null>(null)
 
   const setOrbAmp = useCallback((v: number) => {
     sceneRef.current?.setAudioAmplitude(v)
@@ -598,6 +617,28 @@ export default function App() {
       () => { if (fsm.state === 'idle') scene.setState('idle') },
     ).then(ok => rlog(`[WakeWord] VAD started: ${ok}`))
 
+    // ── Picovoice Porcupine (opt-in, swaps in when access key is set) ───────
+    void (async () => {
+      try {
+        const settings = await window.jarviz.settings.get()
+        const accessKey = settings.envOverrides?.PICOVOICE_ACCESS_KEY
+        if (!accessKey) return
+        const pico = new PicovoiceWakeWord()
+        const ok = await pico.start(accessKey, () => {
+          rlog('[Picovoice] wake!')
+          fsm.send({ type: 'ACTIVATE' })
+        })
+        if (ok) {
+          picoRef.current = pico
+          // Pause the heavier VAD+Whisper path; Porcupine handles wake from now on
+          await ww.pause().catch(() => {})
+          rlog('[Picovoice] active — VAD wake word paused')
+        }
+      } catch (e) {
+        rlog(`[Picovoice] init error: ${(e as Error).message}`)
+      }
+    })()
+
     // ── External triggers ────────────────────────────────────────────────────
     const removeActivate = window.jarviz?.onActivate(() => {
       wakeWordRef.current?.pause().catch(() => {})
@@ -606,6 +647,15 @@ export default function App() {
 
     const removeOpenSettings = window.jarviz?.onOpenSettings(() => {
       setSettingsOpen(true)
+    })
+
+    const removeOpenTranscripts = window.jarviz?.onOpenTranscripts(() => {
+      setTranscriptsOpen(true)
+    })
+
+    const removeUpdaterStatus = window.jarviz?.onUpdaterStatus(s => {
+      setUpdateBanner(s)
+      if (s.state === 'available' || s.state === 'ready') rlog(`[Updater] ${s.state}`)
     })
 
     const removeAgentState = window.jarviz?.agent?.onState(s => {
@@ -632,6 +682,7 @@ export default function App() {
 
     const onUnload = () => {
       ww.stop()
+      picoRef.current?.stop()
       sound.dispose()
       AudioManager.shared().dispose()
     }
@@ -645,9 +696,12 @@ export default function App() {
       sound.dispose()
       fsm.dispose()
       ww.stop()
+      picoRef.current?.stop()
       AudioManager.shared().dispose()
       removeActivate?.()
       removeOpenSettings?.()
+      removeOpenTranscripts?.()
+      removeUpdaterStatus?.()
       removeAgentState?.()
       obs.disconnect()
     }
@@ -701,6 +755,10 @@ export default function App() {
         setSettingsOpen(false)
         return
       }
+      if (transcriptsOpen) {
+        setTranscriptsOpen(false)
+        return
+      }
       const fsm = fsmRef.current
       if (!fsm || fsm.state === 'idle') return
       if (fsm.state === 'thinking') window.jarviz?.agent?.cancel()
@@ -708,7 +766,7 @@ export default function App() {
     }
     window.addEventListener('keydown', onEsc)
     return () => window.removeEventListener('keydown', onEsc)
-  }, [settingsOpen])
+  }, [settingsOpen, transcriptsOpen])
 
   // ── Drag + click handling ──────────────────────────────────────────────────
   const isInsideOrb = useCallback((e: React.MouseEvent) => {
@@ -781,6 +839,37 @@ export default function App() {
         </div>
       </div>
       <SettingsOverlay open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+      <TranscriptOverlay open={transcriptsOpen} onClose={() => setTranscriptsOpen(false)} />
+      {updateBanner && updateBanner.state !== 'error' && (
+        <div
+          data-testid="update-banner"
+          style={{
+            position: 'fixed', top: 12, left: '50%', transform: 'translateX(-50%)',
+            zIndex: 90, background: 'rgba(28,32,44,0.96)',
+            border: '1px solid rgba(160,120,255,0.3)',
+            borderRadius: 10, padding: '8px 14px',
+            fontFamily: 'system-ui, -apple-system, sans-serif',
+            fontSize: 12, color: '#fff', pointerEvents: 'auto',
+            boxShadow: '0 8px 24px rgba(0,0,0,0.5)',
+          }}
+        >
+          {updateBanner.state === 'available'    && '↻ Update available — downloading…'}
+          {updateBanner.state === 'downloading'  && `↻ Update: ${Math.round(updateBanner.progress ?? 0)}%`}
+          {updateBanner.state === 'ready'        && (
+            <>
+              ✓ Update ready —{' '}
+              <button
+                type="button"
+                data-testid="update-install-btn"
+                onClick={() => window.jarviz.installUpdate()}
+                style={{ marginLeft: 6, padding: '2px 10px', borderRadius: 6, border: 'none', cursor: 'pointer', background: '#A142F4', color: '#fff', fontWeight: 700 }}
+              >
+                Restart to install
+              </button>
+            </>
+          )}
+        </div>
+      )}
     </div>
   )
 }
