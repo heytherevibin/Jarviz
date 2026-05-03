@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Jarviz</title>
+    <style>
+      /* Transparency reset — layout containers only. */
+      *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body, #root {
+        width: 100%; height: 100%;
+        overflow: hidden;
+        background: transparent !important;
+        -webkit-app-region: no-drag;
+        user-select: none;
+        -webkit-user-select: none;
+      }
+      .jarviz-settings-root {
+        pointer-events: auto;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

@@ -1,0 +1,16 @@
+node_modules
+dist
+out
+.DS_Store
+*.log
+.env
+.turbo
+coverage
+node_modules/
+dist/
+out/
+.env
+.env.local
+*.log
+.DS_Store
+thumbs.db

@@ -1,0 +1,70 @@
+{
+  "name": "jarviz",
+  "version": "0.1.0",
+  "description": "Jarviz — Enterprise AI Agent",
+  "main": "out/main/index.js",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "dev:stop": "bash scripts/dev-stop.sh",
+    "build": "electron-vite build",
+    "preview": "electron-vite preview",
+    "package": "electron-vite build && electron-builder"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.39.0",
+    "@electron-toolkit/preload": "^3.0.1",
+    "@electron-toolkit/utils": "^4.0.0",
+    "@ricky0123/vad-web": "^0.0.30",
+    "@xenova/transformers": "^2.17.2",
+    "dotenv": "^17.4.2",
+    "electron-store": "^8.2.0",
+    "groq-sdk": "^1.1.2",
+    "onnxruntime-web": "^1.17.3",
+    "openai": "^6.34.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "three": "^0.176.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "@types/react": "^18.3.3",
+    "@types/react-dom": "^18.3.0",
+    "@types/three": "^0.176.0",
+    "@vitejs/plugin-react": "^4.3.1",
+    "electron": "^35.1.2",
+    "electron-builder": "^25.1.8",
+    "electron-vite": "^2.3.0",
+    "typescript": "^5.5.4",
+    "vite": "^5.4.11"
+  },
+  "build": {
+    "appId": "com.jarviz.app",
+    "productName": "Jarviz",
+    "extraResources": [
+      {
+        "from": "resources/tray.png",
+        "to": "resources/tray.png"
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.productivity",
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "hardenedRuntime": true,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist"
+    },
+    "win": {
+      "target": [
+        "nsis"
+      ]
+    },
+    "linux": {
+      "target": [
+        "AppImage"
+      ]
+    }
+  }
+}
