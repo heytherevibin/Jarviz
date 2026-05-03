@@ -1,32 +1,18 @@
-import { useEffect, useState, useCallback, useRef } from 'react'
+import { useEffect, useState, useCallback } from 'react'
 import type { JarvizState } from './state/JarvizFSM'
 
-/**
- * Menubar panel — opens from the tray icon on macOS / Windows / Linux.
- * Contains EVERYTHING that isn't the orb itself: live status, settings,
- * transcripts, voice preview. Designed to be 360×560 next to the tray icon.
- */
-
+// ── Type declarations for preload API ───────────────────────────────────────
 declare global {
   interface Window {
     jarviz: {
-      // Subset used by the panel
-      onActivate:        (cb: () => void) => () => void
-      onAgentState:      (cb: (s: string) => void) => () => void
-      onCaption:         (cb: (c: { phase: string; user: string; reply: string }) => void) => () => void
+      onActivate:   (cb: () => void) => () => void
+      onAgentState: (cb: (s: string) => void) => () => void
+      onCaption:    (cb: (c: { phase: string; user: string; reply: string }) => void) => () => void
       panel: {
         show:           (section?: string) => void
         hide:           () => void
         ping:           () => void
-        getDiagnostics: () => Promise<{
-          platform: string
-          uptimeMs: number
-          envHasGeminiKey: boolean
-          envHasEmergentKey: boolean
-          envGeminiVoice: string
-          llmBackend: string
-          memoryMB: number
-        }>
+        getDiagnostics: () => Promise<Diagnostics>
         previewVoice:   (voice: string) => Promise<{ ok: boolean; error?: string }>
         onPreviewAudio: (cb: (a: { audio: number[]; mime: string }) => void) => () => void
       }
@@ -35,8 +21,8 @@ declare global {
         set: (patch: { envOverrides?: Record<string, string>; llmBackend?: string; whisperModel?: string }) => Promise<boolean>
       }
       transcripts: {
-        list:       () => Promise<Array<{ id: string; startedAt: number; endedAt: number; preview: string; turns: number }>>
-        get:        (id: string) => Promise<{ id: string; startedAt: number; endedAt: number; preview: string; turns: Array<{ role: string; text: string; ts: number }> } | null>
+        list:       () => Promise<Array<TranscriptMeta>>
+        get:        (id: string) => Promise<TranscriptFull | null>
         delete:     (id: string) => Promise<boolean>
         clear:      () => Promise<boolean>
         newSession: () => Promise<boolean>
@@ -45,75 +31,8 @@ declare global {
       getMini: () => Promise<boolean>
       installUpdate: () => Promise<boolean>
       onUpdaterStatus: (cb: (s: { state: string; progress?: number }) => void) => () => void
-      // Below are unused in panel but keep the type complete
-      log?:           (msg: string) => void
-      onOpenPanelSection?: (cb: (section: string) => void) => () => void
     }
   }
-}
-
-const STATE_ACCENT: Record<string, string> = {
-  idle: '#8AB4F8', listening: '#FF8A80', transcribing: '#A8D8B9',
-  thinking: '#D7AEFB', speaking: '#FBD688', followUp: '#8AB4F8', error: '#F28B82',
-}
-
-const STATE_LABEL: Record<string, string> = {
-  idle: 'STANDBY', listening: 'LIVE-IN', transcribing: 'PARSE',
-  thinking: 'COMPUTE', speaking: 'OUTBOUND', followUp: 'STANDBY', error: 'FAULT',
-}
-
-const GEMINI_VOICES = [
-  // Soft female voices (recommended)
-  { id: 'Aoede',       label: 'Aoede — soft female, breezy (default)' },
-  { id: 'Vindemiatrix',label: 'Vindemiatrix — gentle female, refined' },
-  { id: 'Despina',     label: 'Despina — smooth female, even' },
-  { id: 'Sulafat',     label: 'Sulafat — rich female, resonant' },
-  { id: 'Achernar',    label: 'Achernar — bright female, sharp' },
-  { id: 'Enceladus',   label: 'Enceladus — breathy, soft' },
-  { id: 'Algieba',     label: 'Algieba — smooth, warm' },
-  { id: 'Iapetus',     label: 'Iapetus — clear male, articulate' },
-  { id: 'Charon',      label: 'Charon — calm male, neutral' },
-  { id: 'Kore',        label: 'Kore — firm female, professional' },
-  { id: 'Puck',        label: 'Puck — upbeat, friendly' },
-  { id: 'Orus',        label: 'Orus — firm male, decisive' },
-  { id: '',            label: '— Off (use ElevenLabs / browser voice) —' },
-]
-
-const PROVIDER_MODELS: Record<string, { value: string; label: string }[]> = {
-  anthropic: [
-    { value: 'claude-sonnet-4-5-20250929', label: 'Claude Sonnet 4.5' },
-    { value: 'claude-haiku-4-5-20251001',  label: 'Claude Haiku 4.5  (fast)' },
-    { value: 'claude-opus-4-5-20251101',   label: 'Claude Opus 4.5  (most capable)' },
-  ],
-  openai: [
-    { value: 'gpt-5.2',    label: 'GPT-5.2' },
-    { value: 'gpt-5.1',    label: 'GPT-5.1' },
-    { value: 'gpt-5',      label: 'GPT-5' },
-    { value: 'gpt-5-mini', label: 'GPT-5 Mini  (fast)' },
-    { value: 'gpt-4o',     label: 'GPT-4o' },
-  ],
-  gemini: [
-    { value: 'gemini-3.1-pro-preview', label: 'Gemini 3 Pro  (preview)' },
-    { value: 'gemini-3-flash-preview', label: 'Gemini 3 Flash  (preview)' },
-    { value: 'gemini-2.5-pro',         label: 'Gemini 2.5 Pro' },
-  ],
-}
-
-const ENV_KEYS = [
-  'EMERGENT_LLM_KEY', 'ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'GEMINI_API_KEY',
-  'GROQ_API_KEY', 'XAI_API_KEY', 'TAVILY_API_KEY', 'ELEVENLABS_API_KEY', 'PICOVOICE_ACCESS_KEY',
-]
-
-const ENV_KEY_HINTS: Record<string, string> = {
-  EMERGENT_LLM_KEY:    'sk-emergent-… — proxies Claude / GPT / Gemini chat. Already pre-configured.',
-  ANTHROPIC_API_KEY:   'console.anthropic.com — direct.',
-  OPENAI_API_KEY:      'platform.openai.com/api-keys — direct.',
-  GEMINI_API_KEY:      'aistudio.google.com/apikey — REQUIRED for Gemini voices (free).',
-  GROQ_API_KEY:        'console.groq.com — free tier.',
-  XAI_API_KEY:         'console.x.ai — Grok models.',
-  TAVILY_API_KEY:      'Optional — richer web search.',
-  ELEVENLABS_API_KEY:  'Optional — premium voice (used if Gemini key absent).',
-  PICOVOICE_ACCESS_KEY:'Optional — efficient hardware-grade wake word.',
 }
 
 interface Diagnostics {
@@ -125,24 +44,100 @@ interface Diagnostics {
   llmBackend: string
   memoryMB: number
 }
+interface TranscriptMeta { id: string; startedAt: number; endedAt: number; preview: string; turns: number }
+interface TranscriptFull { id: string; startedAt: number; endedAt: number; preview: string; turns: Array<{ role: string; text: string; ts: number }> }
 
-function fmtUptime(ms: number): string {
-  const sec = Math.floor(ms / 1000) % 60
-  const min = Math.floor(ms / 60000) % 60
-  const hr  = Math.floor(ms / 3600000)
-  return `${String(hr).padStart(2, '0')}:${String(min).padStart(2, '0')}:${String(sec).padStart(2, '0')}`
+// ── Sidebar navigation definition ───────────────────────────────────────────
+interface NavItem {
+  id:       string
+  label:    string
+  gradient: string   // CSS gradient for the icon tile
+  icon:     React.ReactNode
+  soon?:    boolean
+  group:    'settings' | 'jarviz'
 }
 
-const fontMono: React.CSSProperties = {
-  fontFamily: '"JetBrains Mono", "SF Mono", ui-monospace, Menlo, monospace',
+const NAV: NavItem[] = [
+  { id: 'general',     label: 'General',     group: 'settings', gradient: 'linear-gradient(135deg,#7A7A82,#4E4E55)', icon: <GearIcon /> },
+  { id: 'voice',       label: 'Voice',       group: 'settings', gradient: 'linear-gradient(135deg,#FF7AB6,#A142F4)', icon: <VoiceIcon /> },
+  { id: 'llm',         label: 'LLM',         group: 'settings', gradient: 'linear-gradient(135deg,#4285F4,#00BCD4)', icon: <SparkIcon /> },
+  { id: 'keys',        label: 'API Keys',    group: 'settings', gradient: 'linear-gradient(135deg,#FBBC04,#EA8300)', icon: <KeyIcon /> },
+  { id: 'wake',        label: 'Wake word',   group: 'settings', gradient: 'linear-gradient(135deg,#7ED957,#1FAC6A)', icon: <WaveIcon /> },
+  { id: 'transcripts', label: 'Transcripts', group: 'jarviz',   gradient: 'linear-gradient(135deg,#FFA34E,#E25822)', icon: <ChatIcon /> },
+  { id: 'status',      label: 'Status',      group: 'jarviz',   gradient: 'linear-gradient(135deg,#30D5C8,#0E8A82)', icon: <ChartIcon /> },
+  { id: 'about',       label: 'About',       group: 'jarviz',   gradient: 'linear-gradient(135deg,#8E8E93,#555561)', icon: <InfoIcon /> },
+]
+
+const GEMINI_VOICES = [
+  { id: 'Aoede',       label: 'Aoede',        hint: 'soft female · breezy (default)' },
+  { id: 'Vindemiatrix',label: 'Vindemiatrix', hint: 'gentle female · refined' },
+  { id: 'Despina',     label: 'Despina',      hint: 'smooth female · even' },
+  { id: 'Sulafat',     label: 'Sulafat',      hint: 'rich female · resonant' },
+  { id: 'Achernar',    label: 'Achernar',     hint: 'bright female · sharp' },
+  { id: 'Enceladus',   label: 'Enceladus',    hint: 'breathy · soft' },
+  { id: 'Algieba',     label: 'Algieba',      hint: 'smooth · warm' },
+  { id: 'Kore',        label: 'Kore',         hint: 'firm female · professional' },
+  { id: 'Puck',        label: 'Puck',         hint: 'upbeat · friendly' },
+  { id: 'Iapetus',     label: 'Iapetus',      hint: 'clear male · articulate' },
+  { id: 'Charon',      label: 'Charon',       hint: 'calm male · neutral' },
+  { id: 'Orus',        label: 'Orus',         hint: 'firm male · decisive' },
+  { id: '',            label: 'Off',          hint: 'use ElevenLabs / browser voice' },
+]
+
+const PROVIDER_MODELS: Record<string, { value: string; label: string }[]> = {
+  anthropic: [
+    { value: 'claude-sonnet-4-5-20250929', label: 'Claude Sonnet 4.5' },
+    { value: 'claude-haiku-4-5-20251001',  label: 'Claude Haiku 4.5' },
+    { value: 'claude-opus-4-5-20251101',   label: 'Claude Opus 4.5' },
+  ],
+  openai: [
+    { value: 'gpt-5.2',    label: 'GPT-5.2' },
+    { value: 'gpt-5.1',    label: 'GPT-5.1' },
+    { value: 'gpt-5',      label: 'GPT-5' },
+    { value: 'gpt-5-mini', label: 'GPT-5 Mini' },
+    { value: 'gpt-4o',     label: 'GPT-4o' },
+  ],
+  gemini: [
+    { value: 'gemini-3.1-pro-preview', label: 'Gemini 3 Pro (preview)' },
+    { value: 'gemini-3-flash-preview', label: 'Gemini 3 Flash (preview)' },
+    { value: 'gemini-2.5-pro',         label: 'Gemini 2.5 Pro' },
+  ],
+}
+
+const KEY_FIELDS: Array<{ k: string; label: string; hint: string }> = [
+  { k: 'EMERGENT_LLM_KEY',     label: 'Emergent Universal Key',  hint: 'sk-emergent-… · proxies Claude/GPT/Gemini chat.' },
+  { k: 'GEMINI_API_KEY',       label: 'Gemini API Key',           hint: 'REQUIRED for Gemini voices · free at aistudio.google.com/apikey.' },
+  { k: 'ANTHROPIC_API_KEY',    label: 'Anthropic API Key',        hint: 'Direct Claude access · console.anthropic.com.' },
+  { k: 'OPENAI_API_KEY',       label: 'OpenAI API Key',           hint: 'Direct GPT access · platform.openai.com.' },
+  { k: 'GROQ_API_KEY',         label: 'Groq API Key',             hint: 'Free fast Llama · console.groq.com.' },
+  { k: 'XAI_API_KEY',          label: 'xAI API Key',              hint: 'Grok models · console.x.ai.' },
+  { k: 'TAVILY_API_KEY',       label: 'Tavily API Key',           hint: 'Optional · richer web search.' },
+  { k: 'ELEVENLABS_API_KEY',   label: 'ElevenLabs API Key',       hint: 'Optional · premium voice (fallback when Gemini absent).' },
+  { k: 'PICOVOICE_ACCESS_KEY', label: 'Picovoice Access Key',     hint: 'Optional · hardware-grade wake word.' },
+]
+
+const STATE_ACCENT: Record<string, string> = {
+  idle: '#8AB4F8', listening: '#FF8A80', transcribing: '#A8D8B9',
+  thinking: '#D7AEFB', speaking: '#FBD688', followUp: '#8AB4F8', error: '#F28B82',
+}
+
+const FONT_MONO: React.CSSProperties = {
+  fontFamily: '"JetBrains Mono","SF Mono",ui-monospace,Menlo,monospace',
   fontVariantNumeric: 'tabular-nums',
   letterSpacing: '0.04em',
 }
 
+function fmtUptime(ms: number): string {
+  const s = Math.floor(ms / 1000) % 60
+  const m = Math.floor(ms / 60000) % 60
+  const h = Math.floor(ms / 3600000)
+  return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`
+}
+
+// ── Main component ─────────────────────────────────────────────────────────
 export function PanelView() {
-  const [tab, setTab] = useState<'status' | 'voice' | 'keys' | 'transcripts'>('status')
+  const [active, setActive] = useState<string>('general')
   const [agentState, setAgentState] = useState<JarvizState | string>('idle')
-  const [caption, setCaption] = useState({ phase: 'STANDBY', user: '', reply: '' })
   const [diag, setDiag] = useState<Diagnostics | null>(null)
 
   // Settings state
@@ -152,19 +147,17 @@ export function PanelView() {
   const [whisperModel, setWhisperModel] = useState('base')
   const [geminiVoice, setGeminiVoice] = useState('Aoede')
   const [keys, setKeys] = useState<Record<string, string>>({})
+  const [miniMode, setMiniMode] = useState(false)
   const [saved, setSaved] = useState(false)
   const [previewBusy, setPreviewBusy] = useState(false)
-  const [previewError, setPreviewError] = useState<string | null>(null)
-  const [miniMode, setMiniMode] = useState(false)
+  const [previewMsg, setPreviewMsg] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null)
 
-  // Transcripts state
-  const [sessions, setSessions] = useState<Array<{ id: string; startedAt: number; endedAt: number; preview: string; turns: number }>>([])
-  const [openSession, setOpenSession] = useState<{ id: string; preview: string; turns: Array<{ role: string; text: string; ts: number }> } | null>(null)
+  const [sessions, setSessions] = useState<TranscriptMeta[]>([])
+  const [openSession, setOpenSession] = useState<TranscriptFull | null>(null)
 
   const accent = STATE_ACCENT[agentState] ?? '#8AB4F8'
-  const stateLabel = STATE_LABEL[agentState] ?? String(agentState).toUpperCase()
 
-  // Refresh diagnostics every 1.5s
+  // ── Diagnostics + live state ───────────────────────────────────────────
   useEffect(() => {
     let cancelled = false
     const refresh = async (): Promise<void> => {
@@ -178,7 +171,8 @@ export function PanelView() {
     return () => { cancelled = true; clearInterval(id) }
   }, [])
 
-  // Preview audio playback
+  useEffect(() => window.jarviz?.onAgentState?.((s) => setAgentState(s as JarvizState)), [])
+
   useEffect(() => {
     return window.jarviz.panel.onPreviewAudio(({ audio, mime }) => {
       try {
@@ -188,34 +182,10 @@ export function PanelView() {
         a.onended = () => URL.revokeObjectURL(url)
         a.onerror = () => URL.revokeObjectURL(url)
         void a.play()
-      } catch (e) {
-        console.error('[Panel] preview play failed', e)
-      }
+      } catch (e) { console.error('[Panel] preview play failed', e) }
     })
   }, [])
 
-  // Listen for "focus this section" events from main (e.g. tray "Settings…" → keys tab)
-  useEffect(() => {
-    const handler = (_: unknown, section: string): void => {
-      if (section === 'keys')        setTab('keys')
-      else if (section === 'voice')  setTab('voice')
-      else if (section === 'transcripts') setTab('transcripts')
-      else if (section === 'status') setTab('status')
-    }
-    const ipc = (window as unknown as { electron?: { ipcRenderer: { on: (c: string, h: typeof handler) => void; removeListener: (c: string, h: typeof handler) => void } } }).electron
-    if (!ipc) return
-    ipc.ipcRenderer.on('panel:focus-section', handler)
-    return () => ipc.ipcRenderer.removeListener('panel:focus-section', handler)
-  }, [])
-
-  // Subscribe to live agent state + caption
-  useEffect(() => {
-    const unState   = window.jarviz?.onAgentState?.((s) => setAgentState(s as JarvizState))
-    const unCaption = window.jarviz?.onCaption?.((c) => setCaption(c))
-    return () => { unState?.(); unCaption?.() }
-  }, [])
-
-  // Load settings on first mount
   const loadSettings = useCallback(async () => {
     const [s, mini] = await Promise.all([window.jarviz.settings.get(), window.jarviz.getMini()])
     setLlmBackend(s.llmBackend || 'emergent')
@@ -228,14 +198,28 @@ export function PanelView() {
   }, [])
   useEffect(() => { loadSettings().catch(console.error) }, [loadSettings])
 
-  // Refresh transcripts whenever the tab opens
   useEffect(() => {
-    if (tab !== 'transcripts') return
+    if (active !== 'transcripts') return
     window.jarviz.transcripts.list().then(setSessions).catch(console.error)
-  }, [tab])
+  }, [active])
+
+  useEffect(() => {
+    const handler = (_: unknown, section: string): void => {
+      if (NAV.some(n => n.id === section)) setActive(section)
+    }
+    const ipc = (window as unknown as { electron?: { ipcRenderer: { on: (c: string, h: typeof handler) => void; removeListener: (c: string, h: typeof handler) => void } } }).electron
+    if (!ipc) return
+    ipc.ipcRenderer.on('panel:focus-section', handler)
+    return () => ipc.ipcRenderer.removeListener('panel:focus-section', handler)
+  }, [])
 
   const saveSettings = useCallback(async () => {
-    const next = { ...keys, EMERGENT_PROVIDER: emergentProvider, EMERGENT_MODEL: emergentModel, GEMINI_TTS_VOICE: geminiVoice }
+    const next = {
+      ...keys,
+      EMERGENT_PROVIDER: emergentProvider,
+      EMERGENT_MODEL:    emergentModel,
+      GEMINI_TTS_VOICE:  geminiVoice,
+    }
     await window.jarviz.settings.set({ llmBackend, whisperModel, envOverrides: next })
     setKeys(next)
     setSaved(true)
@@ -244,422 +228,630 @@ export function PanelView() {
 
   const previewVoice = useCallback(async () => {
     setPreviewBusy(true)
-    setPreviewError(null)
+    setPreviewMsg(null)
     try {
-      // Save first so the preview uses the latest selection
       await saveSettings()
       const r = await window.jarviz.panel.previewVoice(geminiVoice)
-      if (!r.ok) setPreviewError(r.error || 'Voice preview failed.')
+      if (r.ok) setPreviewMsg({ kind: 'ok', text: 'Playing preview…' })
+      else      setPreviewMsg({ kind: 'err', text: r.error || 'Preview failed.' })
     } catch (e) {
-      setPreviewError((e as Error).message)
+      setPreviewMsg({ kind: 'err', text: (e as Error).message })
     } finally {
       setPreviewBusy(false)
     }
   }, [geminiVoice, saveSettings])
 
-  const toggleMini = (): void => {
-    const next = !miniMode
-    setMiniMode(next)
-    void window.jarviz.setMini(next)
-  }
+  const nav = NAV.find(n => n.id === active) ?? NAV[0]
 
-  // Voice diagnostic — explains why voice may not change
-  const voiceWarning = (() => {
-    if (!geminiVoice) return null
-    if (!diag) return null
-    if (!diag.envHasGeminiKey) {
-      return `⚠ Gemini voice "${geminiVoice}" requires GEMINI_API_KEY — set it in the API Keys tab. Right now Jarviz is using the system browser voice.`
-    }
-    if (diag.envGeminiVoice !== geminiVoice) {
-      return `⚠ Voice change not yet applied — click Save below.`
-    }
-    return null
-  })()
-
-  // ── UI ─────────────────────────────────────────────────────────────────────
   return (
     <div style={{
-      width:        '100vw',
-      height:       '100vh',
-      background:   'linear-gradient(180deg, rgba(14,18,28,0.96), rgba(8,10,18,0.99))',
-      color:        '#E8EAEF',
-      fontFamily:   'system-ui, -apple-system, "SF Pro Display", Segoe UI, sans-serif',
-      fontSize:     12.5,
-      display:      'flex',
-      flexDirection:'column',
-      overflow:     'hidden',
+      position:   'fixed',
+      inset:      0,
+      display:    'flex',
+      background: 'linear-gradient(180deg,#1A1C24 0%,#0E0F16 100%)',
+      color:      '#E6E7EB',
+      fontFamily: '"SF Pro Text","Inter",system-ui,-apple-system,sans-serif',
+      fontSize:   13,
+      overflow:   'hidden',
     }}>
-      {/* Header */}
-      <div style={{
-        padding: '14px 16px 10px',
-        borderBottom: '1px solid rgba(255,255,255,0.06)',
+      {/* ── Sidebar ────────────────────────────────────────────────────── */}
+      <aside style={{
+        width: 236,
+        borderRight: '1px solid rgba(255,255,255,0.06)',
+        padding: '44px 10px 14px',
+        WebkitAppRegion: 'drag' as never,   // make the sidebar the drag region on macOS
       }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-          <span style={{
-            width: 8, height: 8, borderRadius: '50%',
-            background: accent, boxShadow: `0 0 8px ${accent}, 0 0 14px ${accent}77`,
-          }} />
-          <span style={{ ...fontMono, fontSize: 11, fontWeight: 700, letterSpacing: '0.16em' }}>
-            J-CORE · {stateLabel}
-          </span>
+        <SidebarGroup title={null}>
+          <SidebarItem item={NAV[0]} active={active === NAV[0].id} onClick={() => setActive(NAV[0].id)} />
+        </SidebarGroup>
+
+        <SidebarGroup title="Settings">
+          {NAV.filter(n => n.group === 'settings' && n.id !== 'general').map(n => (
+            <SidebarItem key={n.id} item={n} active={active === n.id} onClick={() => setActive(n.id)} />
+          ))}
+        </SidebarGroup>
+
+        <SidebarGroup title="Jarviz">
+          {NAV.filter(n => n.group === 'jarviz').map(n => (
+            <SidebarItem key={n.id} item={n} active={active === n.id} onClick={() => setActive(n.id)} />
+          ))}
+        </SidebarGroup>
+      </aside>
+
+      {/* ── Main content pane ─────────────────────────────────────────── */}
+      <main style={{ flex: 1, overflow: 'auto', padding: '38px 28px 32px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 22 }}>
+          <IconTile gradient={nav.gradient} size={28}>{nav.icon}</IconTile>
+          <h1 style={{ fontSize: 22, fontWeight: 700, margin: 0, letterSpacing: '-0.01em' }}>{nav.label}</h1>
           <span style={{ flex: 1 }} />
-          <span style={{ ...fontMono, fontSize: 10, opacity: 0.6 }}>
-            {diag ? fmtUptime(diag.uptimeMs) : '—'}
+          {/* State dot */}
+          <span style={{
+            ...FONT_MONO, fontSize: 9.5, fontWeight: 700, letterSpacing: '0.14em',
+            textTransform: 'uppercase', opacity: 0.7, display: 'flex', alignItems: 'center', gap: 6,
+          }}>
+            <span style={{ width: 7, height: 7, borderRadius: '50%', background: accent, boxShadow: `0 0 6px ${accent}` }} />
+            {String(agentState).toUpperCase()}
           </span>
         </div>
-        {(caption.user || caption.reply) && (
-          <div style={{ fontSize: 11.5, opacity: 0.85, marginTop: 4, lineHeight: 1.5 }}>
-            {caption.user && <div><span style={pillStyle('#8AB4F8')}>YOU</span> {caption.user}</div>}
-            {caption.reply && <div style={{ marginTop: 4 }}><span style={pillStyle('#FBBC04')}>JARVIZ</span> {caption.reply}</div>}
-          </div>
-        )}
-      </div>
 
-      {/* Tab bar */}
-      <div style={{
-        display: 'flex', borderBottom: '1px solid rgba(255,255,255,0.06)',
-        background: 'rgba(0,0,0,0.18)',
-      }}>
-        {([
-          ['status',      'Status'],
-          ['voice',       'Voice'],
-          ['keys',        'Keys'],
-          ['transcripts', 'Transcripts'],
-        ] as const).map(([id, label]) => (
-          <button
-            key={id}
-            type="button"
-            data-testid={`panel-tab-${id}`}
-            onClick={() => setTab(id)}
-            style={{
-              flex: 1,
-              padding: '9px 0',
-              border: 'none',
-              borderBottom: tab === id ? `2px solid ${accent}` : '2px solid transparent',
-              background: 'transparent',
-              color: tab === id ? '#fff' : 'rgba(255,255,255,0.55)',
-              cursor: 'pointer',
-              fontSize: 11,
-              fontWeight: 600,
-              letterSpacing: '0.10em',
-              textTransform: 'uppercase',
-              transition: 'color 0.2s',
+        {active === 'general' && (
+          <GeneralPane
+            miniMode={miniMode}
+            onToggleMini={() => {
+              const next = !miniMode
+              setMiniMode(next)
+              void window.jarviz.setMini(next)
             }}
-          >
-            {label}
-          </button>
-        ))}
-      </div>
+          />
+        )}
 
-      {/* Body */}
-      <div style={{ flex: 1, overflow: 'auto', padding: '14px 16px' }}>
-        {tab === 'status' && diag && <StatusTab diag={diag} accent={accent} miniMode={miniMode} onToggleMini={toggleMini} />}
-        {tab === 'voice' && (
-          <VoiceTab
+        {active === 'voice' && (
+          <VoicePane
             voice={geminiVoice}
             onChange={setGeminiVoice}
             onSave={saveSettings}
             onPreview={previewVoice}
             previewBusy={previewBusy}
-            previewError={previewError}
-            voiceWarning={voiceWarning}
+            previewMsg={previewMsg}
             saved={saved}
+            hasKey={!!diag?.envHasGeminiKey}
           />
         )}
-        {tab === 'keys' && (
-          <KeysTab
+
+        {active === 'llm' && (
+          <LLMPane
             llmBackend={llmBackend} setLlmBackend={setLlmBackend}
             emergentProvider={emergentProvider} setEmergentProvider={setEmergentProvider}
             emergentModel={emergentModel} setEmergentModel={setEmergentModel}
             whisperModel={whisperModel} setWhisperModel={setWhisperModel}
-            keys={keys} setKeys={setKeys}
             onSave={saveSettings} saved={saved}
           />
         )}
-        {tab === 'transcripts' && (
-          <TranscriptsTab
+
+        {active === 'keys' && (
+          <KeysPane keys={keys} setKeys={setKeys} onSave={saveSettings} saved={saved} />
+        )}
+
+        {active === 'wake' && (
+          <WakePane keys={keys} setKeys={setKeys} onSave={saveSettings} saved={saved} />
+        )}
+
+        {active === 'transcripts' && (
+          <TranscriptsPane
             sessions={sessions}
             openSession={openSession}
             setOpenSession={setOpenSession}
             refresh={() => window.jarviz.transcripts.list().then(setSessions)}
           />
         )}
-      </div>
 
-      {/* Footer */}
-      <div style={{
-        padding: '8px 14px',
-        borderTop: '1px solid rgba(255,255,255,0.06)',
-        display: 'flex',
-        gap: 6,
-        alignItems: 'center',
-        fontSize: 10,
-        opacity: 0.6,
-        ...fontMono,
-      }}>
-        <span>{diag?.platform ?? '—'}</span>
-        <span>·</span>
-        <span>RAM {diag?.memoryMB.toFixed(0) ?? '—'} MB</span>
-        <span style={{ flex: 1 }} />
-        <span>v0.4</span>
-      </div>
+        {active === 'status' && diag && <StatusPane diag={diag} accent={accent} />}
+
+        {active === 'about' && <AboutPane />}
+      </main>
     </div>
   )
 }
 
-function pillStyle(color: string): React.CSSProperties {
-  return {
-    fontWeight: 700, fontSize: 9, letterSpacing: '0.14em', textTransform: 'uppercase',
-    marginRight: 6, padding: '1px 6px', borderRadius: 4,
-    background: `${color}1A`, color,
-    display: 'inline-block', verticalAlign: 'middle',
-  }
-}
+// ── Sidebar primitives ─────────────────────────────────────────────────────
 
-const sectionLabel: React.CSSProperties = {
-  fontSize: 9.5, letterSpacing: '0.12em', textTransform: 'uppercase',
-  fontWeight: 700, opacity: 0.65, margin: '14px 0 6px',
-}
-
-const selectStyle: React.CSSProperties = {
-  display: 'block', width: '100%', padding: '8px 10px',
-  borderRadius: 8, border: '1px solid rgba(255,255,255,0.10)',
-  background: 'rgba(0,0,0,0.30)', color: '#fff',
-  fontSize: 12, appearance: 'none', cursor: 'pointer',
-}
-
-const inputStyle: React.CSSProperties = {
-  display: 'block', width: '100%', padding: '8px 10px',
-  borderRadius: 8, border: '1px solid rgba(255,255,255,0.10)',
-  background: 'rgba(0,0,0,0.30)', color: '#fff',
-  fontSize: 11.5, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
-}
-
-const buttonPrimary = (saved: boolean): React.CSSProperties => ({
-  width: '100%', padding: 10, marginTop: 12,
-  borderRadius: 10, border: 'none', cursor: 'pointer',
-  fontWeight: 700, fontSize: 12.5, letterSpacing: '0.04em',
-  background: saved ? 'linear-gradient(135deg, #34A853, #00BCD4)' : 'linear-gradient(135deg, #4285F4, #A142F4)',
-  color: '#fff', transition: 'background 0.3s',
-})
-
-const buttonSecondary: React.CSSProperties = {
-  padding: '7px 12px', borderRadius: 8, border: '1px solid rgba(255,255,255,0.14)',
-  cursor: 'pointer', fontSize: 11, fontWeight: 600,
-  background: 'rgba(255,255,255,0.06)', color: '#fff',
-}
-
-// ── Tabs ───────────────────────────────────────────────────────────────────
-
-interface StatusProps {
-  diag: Diagnostics
-  accent: string
-  miniMode: boolean
-  onToggleMini: () => void
-}
-function StatusTab({ diag, accent, miniMode, onToggleMini }: StatusProps) {
+function SidebarGroup({ title, children }: { title: string | null; children: React.ReactNode }) {
   return (
-    <div>
-      <div style={sectionLabel}>System</div>
-      <Row label="Platform"      value={diag.platform} />
-      <Row label="Uptime"        value={fmtUptime(diag.uptimeMs)} mono />
-      <Row label="Memory"        value={`${diag.memoryMB.toFixed(0)} MB`} mono />
-      <Row label="LLM backend"   value={diag.llmBackend} accent={accent} />
-
-      <div style={sectionLabel}>Configuration</div>
-      <Row label="Universal key" value={diag.envHasEmergentKey ? '✓ set' : '✗ missing'}
-           accent={diag.envHasEmergentKey ? '#A8D8B9' : '#F28B82'} />
-      <Row label="Gemini key"    value={diag.envHasGeminiKey ? '✓ set' : '✗ missing — voice will use browser fallback'}
-           accent={diag.envHasGeminiKey ? '#A8D8B9' : '#F28B82'} />
-      <Row label="Voice"         value={diag.envGeminiVoice || '— off —'} accent={accent} />
-
-      <div style={sectionLabel}>Display</div>
-      <button
-        type="button"
-        data-testid="panel-mini-toggle"
-        onClick={onToggleMini}
-        style={{
-          ...selectStyle,
-          textAlign: 'left', cursor: 'pointer',
-          background: miniMode ? 'rgba(120,80,220,0.20)' : 'rgba(0,0,0,0.30)',
-          border: `1px solid ${miniMode ? 'rgba(160,120,255,0.40)' : 'rgba(255,255,255,0.10)'}`,
-        }}
-      >
-        {miniMode ? '◉' : '○'}  Mini orb mode  (Cmd/Ctrl+Shift+M)
-      </button>
+    <div style={{ marginBottom: 16 }}>
+      {title && (
+        <div style={{
+          fontSize: 10.5, textTransform: 'uppercase', letterSpacing: '0.14em',
+          opacity: 0.5, fontWeight: 700, padding: '6px 10px 6px',
+        }}>
+          {title}
+        </div>
+      )}
+      {children}
     </div>
   )
 }
 
-interface VoiceProps {
+function SidebarItem({ item, active, onClick }: { item: NavItem; active: boolean; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      data-testid={`sidebar-${item.id}`}
+      onClick={onClick}
+      disabled={item.soon}
+      style={{
+        display: 'flex', alignItems: 'center', gap: 10,
+        width: '100%', padding: '6px 10px',
+        borderRadius: 8, border: 'none',
+        cursor: item.soon ? 'not-allowed' : 'pointer',
+        background: active ? 'rgba(255,255,255,0.08)' : 'transparent',
+        color: active ? '#fff' : 'rgba(230,231,235,0.90)',
+        fontSize: 13.5, fontWeight: 500,
+        transition: 'background 0.15s',
+        marginBottom: 2,
+        WebkitAppRegion: 'no-drag' as never,
+      }}
+      onMouseEnter={(e) => { if (!active && !item.soon) (e.currentTarget as HTMLButtonElement).style.background = 'rgba(255,255,255,0.04)' }}
+      onMouseLeave={(e) => { if (!active) (e.currentTarget as HTMLButtonElement).style.background = 'transparent' }}
+    >
+      <IconTile gradient={item.gradient} size={26}>{item.icon}</IconTile>
+      <span style={{ flex: 1, textAlign: 'left', opacity: item.soon ? 0.5 : 1 }}>{item.label}</span>
+      {item.soon && (
+        <span style={{
+          fontSize: 9.5, padding: '2px 7px', borderRadius: 6,
+          background: 'rgba(255,255,255,0.08)', opacity: 0.8,
+        }}>Soon</span>
+      )}
+    </button>
+  )
+}
+
+function IconTile({ gradient, size, children }: { gradient: string; size: number; children: React.ReactNode }) {
+  return (
+    <span style={{
+      width: size, height: size, borderRadius: Math.round(size * 0.27),
+      background: gradient,
+      display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+      boxShadow: 'inset 0 0 0 0.5px rgba(255,255,255,0.15), 0 1px 2px rgba(0,0,0,0.3)',
+      flexShrink: 0,
+    }}>
+      {children}
+    </span>
+  )
+}
+
+// ── Row primitives (Klack-style grouped cards) ─────────────────────────────
+
+function Card({ children }: { children: React.ReactNode }) {
+  return (
+    <div style={{
+      background: 'rgba(255,255,255,0.03)',
+      border: '1px solid rgba(255,255,255,0.07)',
+      borderRadius: 12,
+      overflow: 'hidden',
+      marginBottom: 16,
+    }}>
+      {children}
+    </div>
+  )
+}
+
+function Row({ children, first }: { children: React.ReactNode; first?: boolean }) {
+  return (
+    <div style={{
+      display: 'flex', alignItems: 'center',
+      padding: '12px 16px',
+      minHeight: 44,
+      borderTop: first ? 'none' : '1px solid rgba(255,255,255,0.06)',
+      gap: 14,
+    }}>
+      {children}
+    </div>
+  )
+}
+
+function RowLabel({ children, hint }: { children: React.ReactNode; hint?: string }) {
+  return (
+    <div style={{ flex: 1, minWidth: 0 }}>
+      <div style={{ fontSize: 13.5, color: '#E6E7EB' }}>{children}</div>
+      {hint && <div style={{ fontSize: 11.5, opacity: 0.55, marginTop: 2, lineHeight: 1.4 }}>{hint}</div>}
+    </div>
+  )
+}
+
+function Toggle({ checked, onChange, 'data-testid': testId }: { checked: boolean; onChange: (v: boolean) => void; 'data-testid'?: string }) {
+  return (
+    <button
+      type="button"
+      data-testid={testId}
+      onClick={() => onChange(!checked)}
+      style={{
+        width: 42, height: 24, borderRadius: 14,
+        border: 'none', cursor: 'pointer',
+        background: checked ? 'linear-gradient(135deg,#4285F4,#A142F4)' : 'rgba(255,255,255,0.12)',
+        position: 'relative',
+        transition: 'background 0.2s',
+        padding: 0,
+        flexShrink: 0,
+      }}
+    >
+      <span style={{
+        position: 'absolute',
+        top: 2, left: checked ? 20 : 2,
+        width: 20, height: 20, borderRadius: '50%',
+        background: '#fff',
+        boxShadow: '0 2px 4px rgba(0,0,0,0.3)',
+        transition: 'left 0.2s',
+      }} />
+    </button>
+  )
+}
+
+function Select({ value, onChange, children, 'data-testid': testId, width }: {
+  value: string; onChange: (v: string) => void; children: React.ReactNode
+  'data-testid'?: string; width?: number | string
+}) {
+  return (
+    <select
+      data-testid={testId}
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      style={{
+        appearance: 'none',
+        background: 'rgba(255,255,255,0.08)',
+        border: '1px solid rgba(255,255,255,0.10)',
+        color: '#E6E7EB',
+        padding: '7px 28px 7px 12px',
+        borderRadius: 8,
+        fontSize: 13,
+        cursor: 'pointer',
+        minWidth: width ?? 180,
+        backgroundImage: 'url("data:image/svg+xml;utf8,<svg xmlns=\'http://www.w3.org/2000/svg\' width=\'10\' height=\'6\' viewBox=\'0 0 10 6\'><path fill=\'%23888\' d=\'M0 0l5 6 5-6z\'/></svg>")',
+        backgroundRepeat: 'no-repeat',
+        backgroundPosition: 'right 10px center',
+      }}
+    >
+      {children}
+    </select>
+  )
+}
+
+function TextInput({ value, onChange, placeholder, password, 'data-testid': testId }: {
+  value: string; onChange: (v: string) => void; placeholder?: string; password?: boolean
+  'data-testid'?: string
+}) {
+  return (
+    <input
+      data-testid={testId}
+      type={password ? 'password' : 'text'}
+      value={value}
+      placeholder={placeholder}
+      autoComplete="off"
+      onChange={(e) => onChange(e.target.value)}
+      style={{
+        flex: 1, minWidth: 240,
+        padding: '7px 12px',
+        borderRadius: 8,
+        border: '1px solid rgba(255,255,255,0.10)',
+        background: 'rgba(255,255,255,0.04)',
+        color: '#E6E7EB',
+        fontSize: 12.5,
+        fontFamily: 'ui-monospace,SFMono-Regular,Menlo,monospace',
+      }}
+    />
+  )
+}
+
+function Button({ children, onClick, variant = 'secondary', disabled, 'data-testid': testId, width }: {
+  children: React.ReactNode; onClick: () => void
+  variant?: 'primary' | 'secondary' | 'danger'; disabled?: boolean
+  'data-testid'?: string; width?: number | string
+}) {
+  const bg = variant === 'primary'
+    ? 'linear-gradient(135deg,#4285F4,#A142F4)'
+    : variant === 'danger'
+      ? 'rgba(234,67,53,0.18)'
+      : 'rgba(255,255,255,0.08)'
+  const border = variant === 'danger' ? '1px solid rgba(234,67,53,0.40)' : '1px solid rgba(255,255,255,0.10)'
+  return (
+    <button
+      type="button"
+      data-testid={testId}
+      onClick={onClick}
+      disabled={disabled}
+      style={{
+        padding: '7px 14px', borderRadius: 8, border, cursor: disabled ? 'wait' : 'pointer',
+        background: disabled ? 'rgba(120,120,120,0.15)' : bg,
+        color: '#fff', fontSize: 12.5, fontWeight: 600,
+        width,
+      }}
+    >
+      {children}
+    </button>
+  )
+}
+
+function SectionHint({ children }: { children: React.ReactNode }) {
+  return <div style={{ fontSize: 12, opacity: 0.55, lineHeight: 1.55, marginBottom: 12 }}>{children}</div>
+}
+
+function Banner({ kind, children }: { kind: 'info' | 'warn' | 'err' | 'ok'; children: React.ReactNode }) {
+  const palette = {
+    info: { bg: 'rgba(66,133,244,0.10)', bd: 'rgba(66,133,244,0.30)', fg: '#8AB4F8' },
+    warn: { bg: 'rgba(251,188,4,0.10)',  bd: 'rgba(251,188,4,0.30)',  fg: '#FBD688' },
+    err:  { bg: 'rgba(242,139,130,0.10)',bd: 'rgba(242,139,130,0.30)',fg: '#FFB4AB' },
+    ok:   { bg: 'rgba(52,168,83,0.10)',  bd: 'rgba(52,168,83,0.30)',  fg: '#A8D8B9' },
+  }[kind]
+  return (
+    <div style={{
+      marginBottom: 14, padding: '10px 12px', borderRadius: 10,
+      background: palette.bg, border: `1px solid ${palette.bd}`, color: palette.fg,
+      fontSize: 12, lineHeight: 1.5,
+    }}>
+      {children}
+    </div>
+  )
+}
+
+function KeyCap({ children }: { children: React.ReactNode }) {
+  return (
+    <span style={{
+      display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+      minWidth: 40, height: 40, padding: '0 8px',
+      borderRadius: 8,
+      background: 'linear-gradient(180deg,rgba(255,255,255,0.07),rgba(255,255,255,0.02))',
+      border: '1px solid rgba(255,255,255,0.10)',
+      boxShadow: 'inset 0 -2px 0 rgba(0,0,0,0.35), 0 1px 2px rgba(0,0,0,0.3)',
+      fontSize: 13, fontWeight: 500, color: '#E6E7EB',
+    }}>
+      {children}
+    </span>
+  )
+}
+
+// ── Panes ───────────────────────────────────────────────────────────────────
+
+function GeneralPane({ miniMode, onToggleMini }: { miniMode: boolean; onToggleMini: () => void }) {
+  return (
+    <>
+      <Card>
+        <Row first>
+          <RowLabel hint="Compact 64px orb for unobtrusive operation. Cmd+Shift+M.">Mini orb mode</RowLabel>
+          <Toggle checked={miniMode} onChange={onToggleMini} data-testid="toggle-mini" />
+        </Row>
+      </Card>
+
+      <h2 style={sectionHeadingStyle}>Wake hotkey</h2>
+      <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
+        <KeyCap>⌘</KeyCap>
+        <KeyCap>⇧</KeyCap>
+        <KeyCap>J</KeyCap>
+      </div>
+      <SectionHint>
+        Trigger Jarviz from anywhere with this shortcut, even when the orb is hidden behind other windows.
+      </SectionHint>
+
+      <h2 style={sectionHeadingStyle}>Other shortcuts</h2>
+      <Card>
+        <Row first><RowLabel>Open panel</RowLabel><ShortcutCaps parts={['⌘','⇧','P']} /></Row>
+        <Row><RowLabel>Settings (this window)</RowLabel><ShortcutCaps parts={['⌘',',']} /></Row>
+        <Row><RowLabel>Transcripts</RowLabel><ShortcutCaps parts={['⌘','⇧','T']} /></Row>
+        <Row><RowLabel>Cancel current request</RowLabel><ShortcutCaps parts={['Esc']} /></Row>
+      </Card>
+    </>
+  )
+}
+
+function ShortcutCaps({ parts }: { parts: string[] }) {
+  return (
+    <div style={{ display: 'flex', gap: 5 }}>
+      {parts.map(p => <span key={p} style={{
+        ...FONT_MONO, fontSize: 11,
+        padding: '3px 8px', borderRadius: 6,
+        background: 'rgba(255,255,255,0.06)',
+        border: '1px solid rgba(255,255,255,0.10)',
+        boxShadow: 'inset 0 -1px 0 rgba(0,0,0,0.25)',
+      }}>{p}</span>)}
+    </div>
+  )
+}
+
+const sectionHeadingStyle: React.CSSProperties = {
+  fontSize: 11, fontWeight: 700, letterSpacing: '0.12em', textTransform: 'uppercase',
+  opacity: 0.55, margin: '18px 0 8px',
+}
+
+interface VoicePaneProps {
   voice: string
   onChange: (v: string) => void
   onSave: () => Promise<void>
   onPreview: () => Promise<void>
   previewBusy: boolean
-  previewError: string | null
-  voiceWarning: string | null
+  previewMsg: { kind: 'ok' | 'err'; text: string } | null
   saved: boolean
+  hasKey: boolean
 }
-function VoiceTab({ voice, onChange, onSave, onPreview, previewBusy, previewError, voiceWarning, saved }: VoiceProps) {
+function VoicePane({ voice, onChange, onSave, onPreview, previewBusy, previewMsg, saved, hasKey }: VoicePaneProps) {
   return (
-    <div>
-      <div style={sectionLabel}>Gemini voice</div>
-      <select
-        data-testid="panel-voice-select"
-        value={voice}
-        onChange={e => onChange(e.target.value)}
-        style={selectStyle}
-      >
-        {GEMINI_VOICES.map(v => (
-          <option key={v.id} value={v.id}>{v.label}</option>
-        ))}
-      </select>
-
-      {voiceWarning && (
-        <div style={{
-          marginTop: 10, padding: 10, borderRadius: 8,
-          background: 'rgba(242,139,130,0.10)', border: '1px solid rgba(242,139,130,0.30)',
-          color: '#FFB4AB', fontSize: 11, lineHeight: 1.5,
-        }}>
-          {voiceWarning}
-        </div>
+    <>
+      {!hasKey && (
+        <Banner kind="warn">
+          Gemini voices need a free <strong>GEMINI_API_KEY</strong>. Add it in the API Keys tab to hear
+          the selected voice — without it, Jarviz falls back to your browser TTS voice.
+        </Banner>
       )}
+      <Card>
+        <Row first>
+          <RowLabel hint="Prebuilt voices via Google Gemini TTS.">Voice</RowLabel>
+          <Select value={voice} onChange={onChange} data-testid="panel-voice-select" width={260}>
+            {GEMINI_VOICES.map(v => (
+              <option key={v.id} value={v.id}>
+                {v.label}{v.id ? ` — ${v.hint}` : ''}
+              </option>
+            ))}
+          </Select>
+        </Row>
+      </Card>
 
-      <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
-        <button
-          type="button"
-          data-testid="panel-voice-preview"
-          onClick={onPreview}
-          disabled={previewBusy}
-          style={{
-            ...buttonSecondary,
-            flex: 1, padding: 9,
-            background: previewBusy ? 'rgba(120,120,120,0.15)' : 'rgba(160,120,255,0.18)',
-            border: '1px solid rgba(160,120,255,0.40)',
-            cursor: previewBusy ? 'wait' : 'pointer',
-          }}
-        >
-          {previewBusy ? '… synthesising' : '▷ Preview voice'}
-        </button>
-        <button
-          type="button"
-          data-testid="panel-voice-save"
-          onClick={onSave}
-          style={{ ...buttonSecondary, flex: 1, padding: 9 }}
-        >
-          {saved ? '✓ Saved' : 'Save'}
-        </button>
+      <div style={{ display: 'flex', gap: 8 }}>
+        <Button variant="primary" onClick={onPreview} disabled={previewBusy} data-testid="panel-voice-preview">
+          {previewBusy ? '… synthesising' : '▷  Preview voice'}
+        </Button>
+        <Button onClick={onSave} data-testid="panel-voice-save">{saved ? '✓  Saved' : 'Save'}</Button>
       </div>
 
-      {previewError && (
-        <div style={{
-          marginTop: 10, padding: 10, borderRadius: 8,
-          background: 'rgba(242,139,130,0.10)', border: '1px solid rgba(242,139,130,0.30)',
-          color: '#FFB4AB', fontSize: 11,
-        }}>
-          {previewError}
+      {previewMsg && (
+        <div style={{ marginTop: 12 }}>
+          <Banner kind={previewMsg.kind === 'ok' ? 'ok' : 'err'}>{previewMsg.text}</Banner>
         </div>
       )}
-
-      <div style={{ marginTop: 16, fontSize: 11, opacity: 0.65, lineHeight: 1.5 }}>
-        Gemini voices need a free <strong>GEMINI_API_KEY</strong> from{' '}
-        <span style={{ color: '#8AB4F8' }}>aistudio.google.com/apikey</span>. Without one,
-        Jarviz falls back to the browser TTS voice (which sounds the same regardless of selection).
-      </div>
-    </div>
+    </>
   )
 }
 
-interface KeysProps {
+interface LLMProps {
   llmBackend: string; setLlmBackend: (v: string) => void
   emergentProvider: string; setEmergentProvider: (v: string) => void
   emergentModel: string; setEmergentModel: (v: string) => void
   whisperModel: string; setWhisperModel: (v: string) => void
-  keys: Record<string, string>; setKeys: React.Dispatch<React.SetStateAction<Record<string, string>>>
-  onSave: () => Promise<void>
-  saved: boolean
+  onSave: () => Promise<void>; saved: boolean
 }
-function KeysTab(p: KeysProps) {
+function LLMPane(p: LLMProps) {
   useEffect(() => {
     const list = PROVIDER_MODELS[p.emergentProvider]
-    if (list && !list.some(m => m.value === p.emergentModel)) {
-      p.setEmergentModel(list[0].value)
-    }
+    if (list && !list.some(m => m.value === p.emergentModel)) p.setEmergentModel(list[0].value)
   }, [p.emergentProvider, p.emergentModel, p])
 
   return (
-    <div>
-      <div style={sectionLabel}>LLM backend</div>
-      <select data-testid="panel-backend-select" value={p.llmBackend} onChange={e => p.setLlmBackend(e.target.value)} style={selectStyle}>
-        <option value="emergent">Emergent Universal Key (Claude/GPT/Gemini)</option>
-        <option value="anthropic">Anthropic (your key)</option>
-        <option value="openai">OpenAI (your key)</option>
-        <option value="gemini">Google Gemini (your key)</option>
-        <option value="groq">Groq Llama (free)</option>
-        <option value="xai">xAI Grok</option>
-      </select>
-
-      {p.llmBackend === 'emergent' && (
-        <>
-          <div style={{ ...sectionLabel, marginTop: 12 }}>Provider via Emergent</div>
-          <select value={p.emergentProvider} onChange={e => p.setEmergentProvider(e.target.value)} style={selectStyle}>
-            <option value="anthropic">Anthropic Claude</option>
-            <option value="openai">OpenAI GPT</option>
+    <>
+      <Card>
+        <Row first>
+          <RowLabel hint="Universal key proxies all three; or bring your own.">Backend</RowLabel>
+          <Select value={p.llmBackend} onChange={p.setLlmBackend} data-testid="panel-backend-select">
+            <option value="emergent">Emergent Universal</option>
+            <option value="anthropic">Anthropic</option>
+            <option value="openai">OpenAI</option>
             <option value="gemini">Google Gemini</option>
-          </select>
-          <div style={{ marginTop: 8 }}>
-            <select value={p.emergentModel} onChange={e => p.setEmergentModel(e.target.value)} style={selectStyle}>
-              {(PROVIDER_MODELS[p.emergentProvider] ?? []).map(m => (
-                <option key={m.value} value={m.value}>{m.label}</option>
-              ))}
-            </select>
-          </div>
-        </>
-      )}
+            <option value="groq">Groq</option>
+            <option value="xai">xAI Grok</option>
+          </Select>
+        </Row>
 
-      <div style={sectionLabel}>Whisper STT</div>
-      <select value={p.whisperModel} onChange={e => p.setWhisperModel(e.target.value)} style={selectStyle}>
-        <option value="tiny">tiny  · 39 MB · fastest</option>
-        <option value="base">base  · 145 MB · balanced</option>
-        <option value="small">small  · 466 MB · accurate</option>
-        <option value="medium">medium  · 1.5 GB · high accuracy</option>
-        <option value="large-v3">large-v3  · 3 GB · best accuracy</option>
-      </select>
+        {p.llmBackend === 'emergent' && (
+          <>
+            <Row>
+              <RowLabel>Provider</RowLabel>
+              <Select value={p.emergentProvider} onChange={p.setEmergentProvider}>
+                <option value="anthropic">Anthropic Claude</option>
+                <option value="openai">OpenAI GPT</option>
+                <option value="gemini">Google Gemini</option>
+              </Select>
+            </Row>
+            <Row>
+              <RowLabel>Model</RowLabel>
+              <Select value={p.emergentModel} onChange={p.setEmergentModel}>
+                {(PROVIDER_MODELS[p.emergentProvider] ?? []).map(m =>
+                  <option key={m.value} value={m.value}>{m.label}</option>)}
+              </Select>
+            </Row>
+          </>
+        )}
+      </Card>
 
-      <div style={sectionLabel}>API keys</div>
-      {ENV_KEYS.map(k => (
-        <div key={k} style={{ marginBottom: 8 }}>
-          <div style={{ fontSize: 9.5, fontWeight: 700, letterSpacing: '0.10em', opacity: 0.75, marginBottom: 3 }}>{k}</div>
-          <input
-            data-testid={`panel-key-${k.toLowerCase()}`}
-            type="password"
-            value={p.keys[k] ?? ''}
-            placeholder={ENV_KEY_HINTS[k]}
-            autoComplete="off"
-            onChange={e => p.setKeys(prev => ({ ...prev, [k]: e.target.value }))}
-            style={inputStyle}
+      <h2 style={sectionHeadingStyle}>Speech recognition</h2>
+      <Card>
+        <Row first>
+          <RowLabel hint="Local Whisper. Larger = more accurate, slower.">Whisper model</RowLabel>
+          <Select value={p.whisperModel} onChange={p.setWhisperModel}>
+            <option value="tiny">tiny (39 MB · fastest)</option>
+            <option value="base">base (145 MB · balanced)</option>
+            <option value="small">small (466 MB · accurate)</option>
+            <option value="medium">medium (1.5 GB)</option>
+            <option value="large-v3">large-v3 (3 GB · best)</option>
+          </Select>
+        </Row>
+      </Card>
+
+      <Button variant="primary" onClick={p.onSave} data-testid="panel-llm-save">
+        {p.saved ? '✓  Saved' : 'Save'}
+      </Button>
+    </>
+  )
+}
+
+interface KeysProps {
+  keys: Record<string, string>
+  setKeys: React.Dispatch<React.SetStateAction<Record<string, string>>>
+  onSave: () => Promise<void>; saved: boolean
+}
+function KeysPane(p: KeysProps) {
+  return (
+    <>
+      <SectionHint>
+        Keys are stored locally in electron-store. They never leave your machine except to the chosen provider.
+      </SectionHint>
+      <Card>
+        {KEY_FIELDS.map((f, i) => (
+          <Row key={f.k} first={i === 0}>
+            <RowLabel hint={f.hint}>{f.label}</RowLabel>
+            <TextInput
+              value={p.keys[f.k] ?? ''}
+              onChange={(v) => p.setKeys(prev => ({ ...prev, [f.k]: v }))}
+              placeholder={f.hint}
+              password
+              data-testid={`panel-key-${f.k.toLowerCase()}`}
+            />
+          </Row>
+        ))}
+      </Card>
+      <Button variant="primary" onClick={p.onSave} data-testid="panel-keys-save">
+        {p.saved ? '✓  Saved' : 'Save'}
+      </Button>
+    </>
+  )
+}
+
+function WakePane(p: KeysProps) {
+  return (
+    <>
+      <SectionHint>
+        Jarviz listens for "Hey Jarviz" or "Jarvis" using a local VAD + Whisper.
+        For sub-1% CPU hardware-grade detection, add a <strong>Picovoice access key</strong> (free tier).
+      </SectionHint>
+      <Card>
+        <Row first>
+          <RowLabel hint="Optional — upgrades wake word to Picovoice Porcupine.">Picovoice access key</RowLabel>
+          <TextInput
+            value={p.keys.PICOVOICE_ACCESS_KEY ?? ''}
+            onChange={(v) => p.setKeys(prev => ({ ...prev, PICOVOICE_ACCESS_KEY: v }))}
+            placeholder="Paste key from console.picovoice.ai"
+            password
           />
-        </div>
-      ))}
-
-      <button type="button" data-testid="panel-keys-save" onClick={p.onSave} style={buttonPrimary(p.saved)}>
-        {p.saved ? '✓ Saved' : 'Save'}
-      </button>
-    </div>
+        </Row>
+      </Card>
+      <h2 style={sectionHeadingStyle}>Activation</h2>
+      <Card>
+        <Row first><RowLabel>Voice wake phrase</RowLabel>
+          <span style={{ ...FONT_MONO, fontSize: 12, opacity: 0.85 }}>"Hey Jarviz" · "Jarvis"</span>
+        </Row>
+        <Row><RowLabel>Keyboard shortcut</RowLabel>
+          <ShortcutCaps parts={['⌘','⇧','J']} />
+        </Row>
+      </Card>
+      <Button variant="primary" onClick={p.onSave}>{p.saved ? '✓ Saved' : 'Save'}</Button>
+    </>
   )
 }
 
 interface TranscriptsProps {
-  sessions: Array<{ id: string; startedAt: number; endedAt: number; preview: string; turns: number }>
-  openSession: { id: string; preview: string; turns: Array<{ role: string; text: string; ts: number }> } | null
-  setOpenSession: (s: { id: string; preview: string; turns: Array<{ role: string; text: string; ts: number }> } | null) => void
+  sessions: TranscriptMeta[]
+  openSession: TranscriptFull | null
+  setOpenSession: (s: TranscriptFull | null) => void
   refresh: () => Promise<void>
 }
-function TranscriptsTab(p: TranscriptsProps) {
+function TranscriptsPane(p: TranscriptsProps) {
   const open = async (id: string): Promise<void> => {
     const s = await window.jarviz.transcripts.get(id)
-    if (s) p.setOpenSession({ id: s.id, preview: s.preview, turns: s.turns })
+    if (s) p.setOpenSession(s)
   }
   const del = async (id: string): Promise<void> => {
     if (!confirm('Delete this conversation?')) return
@@ -670,62 +862,158 @@ function TranscriptsTab(p: TranscriptsProps) {
 
   if (p.openSession) {
     return (
-      <div>
-        <button type="button" onClick={() => p.setOpenSession(null)} style={buttonSecondary}>← Back</button>
-        <div style={{ marginTop: 10, fontWeight: 700, fontSize: 12 }}>{p.openSession.preview || '(empty)'}</div>
+      <>
+        <div style={{ marginBottom: 10 }}>
+          <Button onClick={() => p.setOpenSession(null)}>← Back</Button>
+        </div>
+        <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 10 }}>{p.openSession.preview || '(empty)'}</div>
         {p.openSession.turns.map((t, i) => (
-          <div key={i} style={{ marginTop: 10, padding: 8, borderRadius: 8,
-            background: t.role === 'user' ? 'rgba(138,180,248,0.10)' : 'rgba(251,188,4,0.07)',
-            border: '1px solid rgba(255,255,255,0.06)', fontSize: 12, lineHeight: 1.5,
-          }}>
-            <div style={{ fontSize: 9, fontWeight: 700, letterSpacing: '0.14em', opacity: 0.7,
-              color: t.role === 'user' ? '#8AB4F8' : '#FBBC04', marginBottom: 4 }}>
-              {t.role === 'user' ? 'You' : 'Jarviz'}
+          <Card key={i}>
+            <div style={{ padding: 14 }}>
+              <div style={{
+                fontSize: 10, fontWeight: 700, letterSpacing: '0.14em',
+                opacity: 0.7, color: t.role === 'user' ? '#8AB4F8' : '#FBBC04',
+                marginBottom: 6,
+              }}>
+                {t.role === 'user' ? 'YOU' : 'JARVIZ'} · {new Date(t.ts).toLocaleTimeString()}
+              </div>
+              <div style={{ lineHeight: 1.55, whiteSpace: 'pre-wrap' }}>{t.text}</div>
             </div>
-            {t.text}
-          </div>
+          </Card>
         ))}
-        <button type="button" onClick={() => del(p.openSession!.id)} style={{ ...buttonSecondary, marginTop: 12, background: 'rgba(234,67,53,0.20)', borderColor: 'rgba(234,67,53,0.40)' }}>
-          Delete this session
-        </button>
-      </div>
+        <Button variant="danger" onClick={() => del(p.openSession!.id)}>Delete session</Button>
+      </>
     )
   }
 
   return (
-    <div>
-      <div style={{ ...sectionLabel, marginTop: 0 }}>{p.sessions.length} saved</div>
-      {p.sessions.length === 0 && <div style={{ opacity: 0.5, fontSize: 11.5, marginTop: 8 }}>No saved conversations yet.</div>}
-      {p.sessions.map(s => (
-        <button key={s.id} type="button" data-testid={`panel-transcript-${s.id}`} onClick={() => open(s.id)} style={{
-          width: '100%', textAlign: 'left', padding: '10px 12px', marginBottom: 6,
-          background: 'rgba(0,0,0,0.25)', border: '1px solid rgba(255,255,255,0.06)',
-          borderRadius: 8, cursor: 'pointer', color: '#fff',
-        }}>
-          <div style={{ fontSize: 12, fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-            {s.preview || '(empty)'}
-          </div>
-          <div style={{ fontSize: 10, opacity: 0.55, marginTop: 2 }}>{new Date(s.startedAt).toLocaleString()} · {s.turns} turns</div>
-        </button>
-      ))}
+    <>
+      <SectionHint>{p.sessions.length} saved conversations. Auto-resume within 5 min.</SectionHint>
+      {p.sessions.length === 0 && <Banner kind="info">No saved conversations yet. Talk to Jarviz and they'll appear here.</Banner>}
       {p.sessions.length > 0 && (
-        <button type="button" onClick={async () => {
+        <Card>
+          {p.sessions.map((s, i) => (
+            <button
+              key={s.id}
+              type="button"
+              data-testid={`panel-transcript-${s.id}`}
+              onClick={() => open(s.id)}
+              style={{
+                display: 'flex', alignItems: 'center',
+                width: '100%', padding: '12px 16px',
+                background: 'transparent', border: 'none',
+                borderTop: i === 0 ? 'none' : '1px solid rgba(255,255,255,0.06)',
+                cursor: 'pointer', color: '#E6E7EB', textAlign: 'left',
+              }}
+              onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.background = 'rgba(255,255,255,0.04)' }}
+              onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.background = 'transparent' }}
+            >
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 13, fontWeight: 500, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                  {s.preview || '(empty)'}
+                </div>
+                <div style={{ fontSize: 11, opacity: 0.55, marginTop: 2 }}>
+                  {new Date(s.startedAt).toLocaleString()} · {s.turns} turns
+                </div>
+              </div>
+              <span style={{ opacity: 0.4, fontSize: 14 }}>›</span>
+            </button>
+          ))}
+        </Card>
+      )}
+      {p.sessions.length > 0 && (
+        <Button variant="danger" onClick={async () => {
           if (!confirm('Delete ALL saved conversations?')) return
           await window.jarviz.transcripts.clear()
           void p.refresh()
-        }} style={{ ...buttonSecondary, marginTop: 8, width: '100%', background: 'rgba(234,67,53,0.18)', borderColor: 'rgba(234,67,53,0.40)' }}>
-          Clear all
-        </button>
+        }}>Clear all</Button>
       )}
-    </div>
+    </>
   )
 }
 
-function Row({ label, value, mono, accent }: { label: string; value: string; mono?: boolean; accent?: string }) {
+function StatusPane({ diag, accent }: { diag: Diagnostics; accent: string }) {
   return (
-    <div style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0', fontSize: 11.5 }}>
-      <span style={{ opacity: 0.65 }}>{label}</span>
-      <span style={{ ...(mono ? fontMono : null), color: accent ?? '#fff', fontWeight: accent ? 600 : 400 }}>{value}</span>
-    </div>
+    <>
+      <Card>
+        <Row first><RowLabel>Platform</RowLabel><span style={FONT_MONO}>{diag.platform}</span></Row>
+        <Row><RowLabel>Uptime</RowLabel><span style={FONT_MONO}>{fmtUptime(diag.uptimeMs)}</span></Row>
+        <Row><RowLabel>Memory</RowLabel><span style={FONT_MONO}>{diag.memoryMB.toFixed(0)} MB</span></Row>
+        <Row><RowLabel>LLM backend</RowLabel><span style={{ color: accent, fontWeight: 600 }}>{diag.llmBackend}</span></Row>
+      </Card>
+
+      <h2 style={sectionHeadingStyle}>Configuration health</h2>
+      <Card>
+        <Row first>
+          <RowLabel>Universal key</RowLabel>
+          <span style={{ color: diag.envHasEmergentKey ? '#A8D8B9' : '#F28B82' }}>
+            {diag.envHasEmergentKey ? '✓ set' : '✗ missing'}
+          </span>
+        </Row>
+        <Row>
+          <RowLabel hint={!diag.envHasGeminiKey ? 'Needed for Gemini voices. Falls back to browser TTS otherwise.' : undefined}>
+            Gemini key
+          </RowLabel>
+          <span style={{ color: diag.envHasGeminiKey ? '#A8D8B9' : '#F28B82' }}>
+            {diag.envHasGeminiKey ? '✓ set' : '✗ missing'}
+          </span>
+        </Row>
+        <Row>
+          <RowLabel>Active voice</RowLabel>
+          <span style={{ color: accent, fontWeight: 600 }}>{diag.envGeminiVoice || '— off —'}</span>
+        </Row>
+      </Card>
+    </>
   )
+}
+
+function AboutPane() {
+  return (
+    <>
+      <Card>
+        <Row first><RowLabel>Jarviz</RowLabel><span>v0.6</span></Row>
+        <Row><RowLabel>Built with</RowLabel><span>Electron 35 · React 18 · Three.js 0.176</span></Row>
+        <Row><RowLabel>LLM</RowLabel><span>Claude Sonnet 4.5 · GPT-5.2 · Gemini 3 Pro</span></Row>
+        <Row><RowLabel>Voice</RowLabel><span>Gemini TTS · ElevenLabs fallback</span></Row>
+      </Card>
+      <SectionHint>
+        Jarviz is an autonomous desktop agent modeled after Iron Man's JARVIS.
+        All voice processing runs locally. Only chat + tool results travel to the chosen LLM.
+      </SectionHint>
+    </>
+  )
+}
+
+// ── Icon components ────────────────────────────────────────────────────────
+
+function svgProps(size = 14) {
+  return {
+    width: size, height: size, viewBox: '0 0 24 24', fill: 'none',
+    stroke: 'white', strokeWidth: 2, strokeLinecap: 'round' as const, strokeLinejoin: 'round' as const,
+  }
+}
+
+function GearIcon()  {
+  return <svg {...svgProps(14)}><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+}
+function VoiceIcon() {
+  return <svg {...svgProps(14)}><path d="M11 5L6 9H2v6h4l5 4V5z"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg>
+}
+function SparkIcon() {
+  return <svg {...svgProps(14)}><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>
+}
+function KeyIcon() {
+  return <svg {...svgProps(14)}><circle cx="8" cy="15" r="4"/><path d="M10.85 12.15L19 4M18 5l2 2M15 8l2 2"/></svg>
+}
+function WaveIcon() {
+  return <svg {...svgProps(14)}><path d="M2 12h3M19 12h3M7 8v8M11 4v16M15 8v8"/></svg>
+}
+function ChatIcon() {
+  return <svg {...svgProps(14)}><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+}
+function ChartIcon() {
+  return <svg {...svgProps(14)}><path d="M3 3v18h18"/><rect x="7" y="12" width="3" height="6"/><rect x="12" y="8" width="3" height="10"/><rect x="17" y="5" width="3" height="13"/></svg>
+}
+function InfoIcon() {
+  return <svg {...svgProps(14)}><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>
 }

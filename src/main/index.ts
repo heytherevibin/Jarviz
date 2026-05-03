@@ -485,7 +485,7 @@ function createWindow(): void {
 // ── Menubar panel window ─────────────────────────────────────────────────────
 let panelWindow: BrowserWindow | null = null
 
-const PANEL_W = 360
+const PANEL_W = 760
 const PANEL_H = 560
 
 function createPanelWindow(): void {
@@ -495,15 +495,19 @@ function createPanelWindow(): void {
     width:        PANEL_W,
     height:       PANEL_H,
     show:         false,
-    frame:        false,
+    frame:        process.platform === 'darwin' ? true : false,
+    titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
+    trafficLightPosition: process.platform === 'darwin' ? { x: 14, y: 14 } : undefined,
     resizable:    false,
+    minimizable:  false,
+    maximizable:  false,
     fullscreenable: false,
-    skipTaskbar:  process.platform === 'darwin',
-    movable:      false,
-    transparent:  true,
-    backgroundColor: '#00000000',
+    skipTaskbar:  false,
+    transparent:  false,
+    backgroundColor: '#0B0D14',
     hasShadow:    true,
     title:        'Jarviz',
+    vibrancy:     process.platform === 'darwin' ? 'under-window' : undefined,
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       contextIsolation: true,
@@ -512,12 +516,11 @@ function createPanelWindow(): void {
     },
   })
 
-  panelWindow.setAlwaysOnTop(true, 'floating')
-  panelWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
-
-  // Hide on blur (popover behaviour) — like a true menubar dropdown
-  panelWindow.on('blur', () => {
-    if (panelWindow && !panelWindow.isDestroyed()) panelWindow.hide()
+  // Close button hides instead of destroying, so the window is ready to re-show instantly
+  panelWindow.on('close', (e) => {
+    if (!panelWindow || panelWindow.isDestroyed()) return
+    e.preventDefault()
+    panelWindow.hide()
   })
 
   const url = !app.isPackaged && process.env['ELECTRON_RENDERER_URL']
@@ -533,32 +536,14 @@ function createPanelWindow(): void {
 
 function positionPanelNearTray(): void {
   if (!panelWindow || !tray) return
-  const trayBounds = tray.getBounds()
   const panelW = PANEL_W
   const panelH = PANEL_H
-  const display = screen.getDisplayNearestPoint({ x: trayBounds.x, y: trayBounds.y })
+  const display = screen.getPrimaryDisplay()
   const { workArea } = display
 
-  let x: number
-  let y: number
-
-  if (process.platform === 'darwin') {
-    // macOS: tray is in the top menu bar; drop the panel just below it, centered on the icon
-    x = Math.round(trayBounds.x + (trayBounds.width - panelW) / 2)
-    y = Math.round(trayBounds.y + trayBounds.height + 4)
-  } else if (process.platform === 'win32') {
-    // Windows: system tray usually bottom-right; pop up above-right of the tray
-    x = workArea.x + workArea.width  - panelW - 12
-    y = workArea.y + workArea.height - panelH - 12
-  } else {
-    // Linux: top-right of screen
-    x = workArea.x + workArea.width - panelW - 12
-    y = workArea.y + 12
-  }
-
-  // Keep panel inside the work area
-  x = Math.max(workArea.x + 8, Math.min(workArea.x + workArea.width  - panelW - 8, x))
-  y = Math.max(workArea.y + 8, Math.min(workArea.y + workArea.height - panelH - 8, y))
+  // Center on primary display — proper settings-window placement, not a popover
+  const x = Math.round(workArea.x + (workArea.width  - panelW) / 2)
+  const y = Math.round(workArea.y + (workArea.height - panelH) / 2)
 
   panelWindow.setBounds({ x, y, width: panelW, height: panelH })
 }
