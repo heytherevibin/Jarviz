@@ -1,41 +1,27 @@
-node_modules
-dist
-out
-.DS_Store
-*.log
-.env
-.turbo
-coverage
 node_modules/
 dist/
 out/
-# Generated from node_modules/onnxruntime-web by Vite (see electron.vite.config.ts)
+coverage/
+.turbo/
+
+# TypeScript incremental (composite projects)
+*.tsbuildinfo
+
+# Vite / Electron generated (see electron.vite.config.ts)
 src/renderer/public/onnx-wasm/
-.env
-.env.local
-*.log
+
+# Swift Package Manager — never commit build trees
+native/**/.build/
+
+# Local macOS shell experiment bundle (not a shipped artifact)
+build/JarvizShell.app/
+
+# OS / editor
 .DS_Store
 thumbs.db
--e 
-# Environment and credential files
-.env
-.env.*
-*.env
-credentials.json
-*.pem
-*.key
-.credentials
--e 
-# Environment and credential files
-.env
-.env.*
-*.env
-credentials.json
-*.pem
-*.key
-.credentials
--e 
-# Environment and credential files
+*.log
+
+# Environment and credentials
 .env
 .env.*
 *.env
