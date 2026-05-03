@@ -27,15 +27,30 @@ The orb appears in the bottom-center of your primary display. **Fully functional
 | Resize                | scroll wheel · `+` / `-` / `0`            |
 | Move                  | drag (snaps to screen edges)              |
 
-## Where to find Settings
+## Where to find Settings (v0.5)
 
-**Three ways** — pick whichever fits your flow:
+The orb is **truly pristine** now — nothing on it but the orb itself. **Everything else lives in the menubar panel**.
 
-1. **⚙ gear button** at the top-right corner of the orb window (always visible).
-2. **Hotkey** `Cmd + ,` (macOS) or `Ctrl + ,` (Win/Linux) — works from anywhere.
-3. **Menu bar / tray icon**:
-   - macOS: top menu bar `Jarviz → Settings…` *or* tray icon → "Settings…"
-   - Windows / Linux: tray icon → "Settings…" (same menu also has Transcripts and Mini mode).
+**Open the panel any of these ways**:
+1. **Click the tray icon** in the macOS top menu bar / Windows system tray — the panel pops out next to it.
+2. **Hotkey** `Cmd+,` (macOS) / `Ctrl+,` (Win/Linux) — opens panel at Keys tab.
+3. **Hotkey** `Cmd+Shift+P` / `Ctrl+Shift+P` — toggles panel.
+4. **macOS menu bar** at top of screen → `Jarviz` menu → `Open Panel` / `Settings…` / `Transcripts…`.
+5. **Right-click the tray icon** → context menu with all entries.
+
+The panel has 4 tabs: **Status** (live diagnostics) · **Voice** (Gemini picker + ▷ Preview) · **Keys** (all API keys) · **Transcripts**.
+
+## "Why hasn't the voice changed?"
+
+Gemini voices need a free `GEMINI_API_KEY` from `aistudio.google.com/apikey`. **The Universal Key alone is NOT enough for TTS** (the Emergent proxy doesn't currently support TTS endpoints). Without a Gemini key, Jarviz transparently falls back to your OS browser TTS voice — which is why selecting "Aoede" or any other Gemini voice has no audible effect.
+
+**Fix**:
+1. Open the panel (tray icon)
+2. Go to **Keys** tab → paste your free `GEMINI_API_KEY` → Save
+3. Go to **Voice** tab → pick `Aoede` → click **▷ Preview voice**
+4. You should hear *"Good evening — Jarviz online and ready"* in the selected voice. If not, the Preview button surfaces the exact error.
+
+## What's new (v0.5 — Menubar architecture)
 
 ## What's new (v0.4 — Instant speech & Futuristic HUD)
 

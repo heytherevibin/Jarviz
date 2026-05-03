@@ -314,19 +314,83 @@ function registerMainProcessHandlers(): void {
   })
   ipcMain.handle('orb:getMini', () => miniMode)
 
+  // ── Orb → Panel relay (for live status mirror) ──────────────────────────
+  ipcMain.on('orb:state', (_, state: string) => {
+    if (panelWindow && !panelWindow.isDestroyed()) {
+      panelWindow.webContents.send('panel:agentState', state)
+    }
+  })
+  ipcMain.on('orb:caption', (_, c: { phase: string; user: string; reply: string }) => {
+    if (panelWindow && !panelWindow.isDestroyed()) {
+      panelWindow.webContents.send('panel:caption', c)
+    }
+  })
+
   // ── Updater ─────────────────────────────────────────────────────────────
   ipcMain.handle('updater:install', () => { quitAndInstallUpdate(); return true })
+
+  // ── Menubar Panel ───────────────────────────────────────────────────────
+  ipcMain.on('panel:show',     (_, section?: string) => showPanel(section))
+  ipcMain.on('panel:hide',     () => hidePanel())
+  ipcMain.handle('panel:toggle', () => { togglePanel(); return true })
+
+  ipcMain.handle('panel:getDiagnostics', () => ({
+    platform:           `${process.platform}-${process.arch}`,
+    uptimeMs:           Math.round(process.uptime() * 1000),
+    envHasGeminiKey:    !!process.env.GEMINI_API_KEY,
+    envHasEmergentKey:  !!process.env.EMERGENT_LLM_KEY,
+    envGeminiVoice:     process.env.GEMINI_TTS_VOICE ?? '',
+    llmBackend:         (process.env.LLM_BACKEND ?? 'emergent'),
+    memoryMB:           Math.round(process.memoryUsage().rss / (1024 * 1024)),
+  }))
+
+  ipcMain.handle('panel:previewVoice', async (event, voice: string) => {
+    try {
+      const { synthesize } = await import('./agent/tts')
+      // Temporarily override env for this preview only
+      const prev = process.env.GEMINI_TTS_VOICE
+      if (voice) process.env.GEMINI_TTS_VOICE = voice
+      else delete process.env.GEMINI_TTS_VOICE
+      try {
+        const r = await synthesize('Good evening — Jarviz online and ready.')
+        if (!r) {
+          if (!process.env.GEMINI_API_KEY && voice) {
+            return { ok: false, error: 'No GEMINI_API_KEY set. Add it in the Keys tab — get a free one at aistudio.google.com/apikey.' }
+          }
+          if (!process.env.ELEVENLABS_API_KEY && !voice) {
+            return { ok: false, error: 'Voice is "Off" and no ElevenLabs key set — preview unavailable. The browser TTS plays during real conversations.' }
+          }
+          return { ok: false, error: 'Synthesis returned no audio (check API key validity).' }
+        }
+        // Send to panel for playback
+        event.sender.send('panel:previewAudio', {
+          audio: Array.from(r.buffer),
+          mime:  r.mime,
+        })
+        return { ok: true }
+      } finally {
+        if (prev !== undefined) process.env.GEMINI_TTS_VOICE = prev
+        else if (!voice) { /* already deleted */ }
+      }
+    } catch (e) {
+      return { ok: false, error: (e as Error).message }
+    }
+  })
 
   globalShortcut.register('CommandOrControl+Shift+J', () => {
     mainWindow?.webContents.send('jarviz:activate')
   })
 
   globalShortcut.register('CommandOrControl+,', () => {
-    mainWindow?.webContents.send('jarviz:open-settings')
+    showPanel('keys')
+  })
+
+  globalShortcut.register('CommandOrControl+Shift+P', () => {
+    togglePanel()
   })
 
   globalShortcut.register('CommandOrControl+Shift+T', () => {
-    mainWindow?.webContents.send('jarviz:open-transcripts')
+    showPanel('transcripts')
   })
 
   globalShortcut.register('CommandOrControl+Shift+M', () => {
@@ -418,12 +482,121 @@ function createWindow(): void {
   })
 }
 
-function openSettingsFromMenu(): void {
-  if (!mainWindow) return
-  if (!mainWindow.isDestroyed()) {
-    focusOrbWindow()
-    mainWindow.webContents.send('jarviz:open-settings')
+// ── Menubar panel window ─────────────────────────────────────────────────────
+let panelWindow: BrowserWindow | null = null
+
+const PANEL_W = 360
+const PANEL_H = 560
+
+function createPanelWindow(): void {
+  if (panelWindow && !panelWindow.isDestroyed()) return
+
+  panelWindow = new BrowserWindow({
+    width:        PANEL_W,
+    height:       PANEL_H,
+    show:         false,
+    frame:        false,
+    resizable:    false,
+    fullscreenable: false,
+    skipTaskbar:  process.platform === 'darwin',
+    movable:      false,
+    transparent:  true,
+    backgroundColor: '#00000000',
+    hasShadow:    true,
+    title:        'Jarviz',
+    webPreferences: {
+      preload: join(__dirname, '../preload/index.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: false,
+    },
+  })
+
+  panelWindow.setAlwaysOnTop(true, 'floating')
+  panelWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
+
+  // Hide on blur (popover behaviour) — like a true menubar dropdown
+  panelWindow.on('blur', () => {
+    if (panelWindow && !panelWindow.isDestroyed()) panelWindow.hide()
+  })
+
+  const url = !app.isPackaged && process.env['ELECTRON_RENDERER_URL']
+    ? `${process.env['ELECTRON_RENDERER_URL']}?view=panel`
+    : `file://${join(__dirname, '../renderer/index.html')}?view=panel`
+
+  panelWindow.loadURL(url)
+
+  panelWindow.on('closed', () => {
+    panelWindow = null
+  })
+}
+
+function positionPanelNearTray(): void {
+  if (!panelWindow || !tray) return
+  const trayBounds = tray.getBounds()
+  const panelW = PANEL_W
+  const panelH = PANEL_H
+  const display = screen.getDisplayNearestPoint({ x: trayBounds.x, y: trayBounds.y })
+  const { workArea } = display
+
+  let x: number
+  let y: number
+
+  if (process.platform === 'darwin') {
+    // macOS: tray is in the top menu bar; drop the panel just below it, centered on the icon
+    x = Math.round(trayBounds.x + (trayBounds.width - panelW) / 2)
+    y = Math.round(trayBounds.y + trayBounds.height + 4)
+  } else if (process.platform === 'win32') {
+    // Windows: system tray usually bottom-right; pop up above-right of the tray
+    x = workArea.x + workArea.width  - panelW - 12
+    y = workArea.y + workArea.height - panelH - 12
+  } else {
+    // Linux: top-right of screen
+    x = workArea.x + workArea.width - panelW - 12
+    y = workArea.y + 12
   }
+
+  // Keep panel inside the work area
+  x = Math.max(workArea.x + 8, Math.min(workArea.x + workArea.width  - panelW - 8, x))
+  y = Math.max(workArea.y + 8, Math.min(workArea.y + workArea.height - panelH - 8, y))
+
+  panelWindow.setBounds({ x, y, width: panelW, height: panelH })
+}
+
+function togglePanel(section?: string): void {
+  if (!panelWindow || panelWindow.isDestroyed()) createPanelWindow()
+  if (!panelWindow) return
+  if (panelWindow.isVisible()) {
+    panelWindow.hide()
+  } else {
+    showPanel(section)
+  }
+}
+
+function showPanel(section?: string): void {
+  if (!panelWindow || panelWindow.isDestroyed()) createPanelWindow()
+  if (!panelWindow) return
+  positionPanelNearTray()
+  panelWindow.show()
+  panelWindow.focus()
+  if (section) {
+    // If the renderer has already loaded, fire immediately;
+    // otherwise wait for did-finish-load (first-time creation race).
+    const send = (): void => panelWindow?.webContents.send('panel:focus-section', section)
+    if (panelWindow.webContents.isLoading()) {
+      panelWindow.webContents.once('did-finish-load', send)
+    } else {
+      send()
+    }
+  }
+}
+
+function hidePanel(): void {
+  if (panelWindow && !panelWindow.isDestroyed()) panelWindow.hide()
+}
+
+function openSettingsFromMenu(): void {
+  showPanel('keys')
 }
 
 /** Shown as the first menu on macOS screen menu bar (Electron dev name is otherwise "Electron"). */
@@ -442,9 +615,19 @@ function setApplicationMenu(): void {
         { role: 'about' },
         { type: 'separator' },
         {
+          label: 'Open Panel',
+          accelerator: 'Command+Shift+P',
+          click: () => togglePanel(),
+        },
+        {
           label: 'Settings…',
           accelerator: 'Command+,',
-          click: () => openSettingsFromMenu(),
+          click: () => showPanel('keys'),
+        },
+        {
+          label: 'Transcripts…',
+          accelerator: 'Command+Shift+T',
+          click: () => showPanel('transcripts'),
         },
         { type: 'separator' },
         { role: 'services' },
@@ -461,9 +644,19 @@ function setApplicationMenu(): void {
       label: 'File',
       submenu: [
         {
+          label: 'Open Panel',
+          accelerator: 'Ctrl+Shift+P',
+          click: () => togglePanel(),
+        },
+        {
           label: 'Settings…',
           accelerator: 'Ctrl+,',
-          click: () => openSettingsFromMenu(),
+          click: () => showPanel('keys'),
+        },
+        {
+          label: 'Transcripts…',
+          accelerator: 'Ctrl+Shift+T',
+          click: () => showPanel('transcripts'),
         },
         { type: 'separator' },
         { role: 'quit' },
@@ -531,27 +724,27 @@ function createTray(): void {
     /** Text label helps when the raster is omitted or monochrome by the shell. macOS-only. */
     if (process.platform === 'darwin') tray.setTitle('Jarviz')
 
-    if (process.platform === 'darwin') {
-      tray.on('click', () => focusOrbWindow())
-    }
+    // Click on tray icon → toggle the menubar panel (popover-style)
+    tray.on('click', () => togglePanel())
+    tray.on('right-click', () => tray && tray.popUpContextMenu())
 
     const menu = Menu.buildFromTemplate([
       { label: 'Jarviz', enabled: false },
       { type: 'separator' },
       {
+        label: 'Open panel',
+        accelerator: 'CommandOrControl+Shift+P',
+        click: () => togglePanel(),
+      },
+      {
         label: 'Settings…',
         accelerator: 'CommandOrControl+,',
-        click: () => openSettingsFromMenu(),
+        click: () => showPanel('keys'),
       },
       {
         label: 'Transcripts…',
         accelerator: 'CommandOrControl+Shift+T',
-        click: () => {
-          if (mainWindow && !mainWindow.isDestroyed()) {
-            focusOrbWindow()
-            mainWindow.webContents.send('jarviz:open-transcripts')
-          }
-        },
+        click: () => showPanel('transcripts'),
       },
       {
         label: 'Toggle mini mode',
@@ -591,6 +784,7 @@ app.whenReady().then(() => {
   setApplicationMenu()
   createTray()
   createWindow()
+  createPanelWindow()
   setupAutoUpdater(() => mainWindow)
 
   app.on('activate', () => {

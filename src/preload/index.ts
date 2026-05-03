@@ -1,7 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { electronAPI } from '@electron-toolkit/preload'
 
-/** Agent round-trip must exceed IPC ceiling — LLM + tools + TTS can exceed 20s easily */
 const IPC_TIMEOUT_MS = 120000
 
 function invokeWithTimeout<T>(channel: string, args: unknown): Promise<T> {
@@ -14,48 +13,29 @@ function invokeWithTimeout<T>(channel: string, args: unknown): Promise<T> {
 }
 
 const jarviz = {
-  dragStart: (mouseX: number, mouseY: number) =>
-    ipcRenderer.send('drag:start', { mouseX, mouseY }),
-  dragMove: (mouseX: number, mouseY: number) =>
-    ipcRenderer.send('drag:move', { mouseX, mouseY }),
-  dragEnd: () => ipcRenderer.send('drag:end'),
+  // Drag controls (orb only)
+  dragStart: (mouseX: number, mouseY: number) => ipcRenderer.send('drag:start', { mouseX, mouseY }),
+  dragMove:  (mouseX: number, mouseY: number) => ipcRenderer.send('drag:move',  { mouseX, mouseY }),
+  dragEnd:   () => ipcRenderer.send('drag:end'),
 
+  // Window events received by orb
   onActivate: (cb: () => void) => {
-    const handler = (): void => cb()
-    ipcRenderer.on('jarviz:activate', handler)
-    return () => ipcRenderer.removeListener('jarviz:activate', handler)
+    const h = (): void => cb()
+    ipcRenderer.on('jarviz:activate', h)
+    return () => ipcRenderer.removeListener('jarviz:activate', h)
   },
-
-  onOpenSettings: (cb: () => void) => {
-    const handler = (): void => cb()
-    ipcRenderer.on('jarviz:open-settings', handler)
-    return () => ipcRenderer.removeListener('jarviz:open-settings', handler)
-  },
-
-  onOpenTranscripts: (cb: () => void) => {
-    const handler = (): void => cb()
-    ipcRenderer.on('jarviz:open-transcripts', handler)
-    return () => ipcRenderer.removeListener('jarviz:open-transcripts', handler)
-  },
-
-  onMiniChanged: (cb: (mini: boolean) => void) => {
-    const handler = (_: Electron.IpcRendererEvent, mini: boolean): void => cb(mini)
-    ipcRenderer.on('orb:miniChanged', handler)
-    return () => ipcRenderer.removeListener('orb:miniChanged', handler)
-  },
-
-  onUpdaterStatus: (cb: (s: { state: string; progress?: number; message?: string; info?: unknown }) => void) => {
-    const handler = (_: Electron.IpcRendererEvent, s: { state: string; progress?: number; message?: string; info?: unknown }): void => cb(s)
-    ipcRenderer.on('updater:status', handler)
-    return () => ipcRenderer.removeListener('updater:status', handler)
-  },
+  onOpenSettings:    (cb: () => void) => sub('jarviz:open-settings', cb),
+  onOpenTranscripts: (cb: () => void) => sub('jarviz:open-transcripts', cb),
+  onMiniChanged:     (cb: (mini: boolean) => void) => sub('orb:miniChanged', cb),
+  onUpdaterStatus:   (cb: (s: { state: string; progress?: number; message?: string; info?: unknown }) => void) =>
+    sub('updater:status', cb),
 
   log: (msg: string) => ipcRenderer.send('renderer:log', msg),
 
-  orbResize: (size: number) => ipcRenderer.send('orb:resize', { size }),
+  orbResize:  (size: number) => ipcRenderer.send('orb:resize', { size }),
   orbGetSize: (): Promise<number> => ipcRenderer.invoke('orb:getSize'),
-  setMini: (on: boolean): Promise<boolean> => ipcRenderer.invoke('orb:setMini', on),
-  getMini: (): Promise<boolean> => ipcRenderer.invoke('orb:getMini'),
+  setMini:    (on: boolean): Promise<boolean> => ipcRenderer.invoke('orb:setMini', on),
+  getMini:    (): Promise<boolean> => ipcRenderer.invoke('orb:getMini'),
 
   primaryScreenSize: (): Promise<{ width: number; height: number; x: number; y: number }> =>
     ipcRenderer.invoke('screen:primarySize'),
@@ -63,6 +43,27 @@ const jarviz = {
   getWhisperModel: (): Promise<string> => ipcRenderer.invoke('config:whisperModel'),
 
   installUpdate: (): Promise<boolean> => ipcRenderer.invoke('updater:install'),
+
+  // Orb → main relay (so the panel can mirror live state without doing FSM work)
+  relayState:   (state: string) => ipcRenderer.send('orb:state', state),
+  relayCaption: (c: { phase: string; user: string; reply: string }) => ipcRenderer.send('orb:caption', c),
+
+  // Panel listens for these
+  onAgentState: (cb: (s: string) => void) => sub('panel:agentState', cb),
+  onCaption:    (cb: (c: { phase: string; user: string; reply: string }) => void) => sub('panel:caption', cb),
+
+  panel: {
+    show: (section?: string) => ipcRenderer.send('panel:show', section),
+    hide: () => ipcRenderer.send('panel:hide'),
+    ping: () => ipcRenderer.invoke('panel:toggle'),
+    getDiagnostics: (): Promise<{
+      platform: string; uptimeMs: number; envHasGeminiKey: boolean; envHasEmergentKey: boolean;
+      envGeminiVoice: string; llmBackend: string; memoryMB: number;
+    }> => ipcRenderer.invoke('panel:getDiagnostics'),
+    previewVoice: (voice: string): Promise<{ ok: boolean; error?: string }> =>
+      ipcRenderer.invoke('panel:previewVoice', voice),
+    onPreviewAudio: (cb: (a: { audio: number[]; mime: string }) => void) => sub('panel:previewAudio', cb),
+  },
 
   settings: {
     get: (): Promise<{
@@ -94,18 +95,17 @@ const jarviz = {
 
     cancel: () => ipcRenderer.send('agent:cancel'),
 
-    onState: (cb: (state: string) => void) => {
-      const handler = (_: Electron.IpcRendererEvent, { state }: { state: string }): void => cb(state)
-      ipcRenderer.on('agent:state', handler)
-      return () => ipcRenderer.removeListener('agent:state', handler)
-    },
+    onState: (cb: (state: string) => void) => sub('agent:state', (e: { state: string }) => cb(e.state)),
 
-    onSpeakChunk: (cb: (chunk: { index: number; total: number; text: string; audio: number[] | null; audioMime: string | null; isFinal: boolean }) => void) => {
-      const handler = (_: Electron.IpcRendererEvent, chunk: { index: number; total: number; text: string; audio: number[] | null; audioMime: string | null; isFinal: boolean }): void => cb(chunk)
-      ipcRenderer.on('agent:speakChunk', handler)
-      return () => ipcRenderer.removeListener('agent:speakChunk', handler)
-    },
+    onSpeakChunk: (cb: (chunk: { index: number; total: number; text: string; audio: number[] | null; audioMime: string | null; isFinal: boolean }) => void) =>
+      sub('agent:speakChunk', cb),
   },
+}
+
+function sub<T>(channel: string, cb: (payload: T) => void): () => void {
+  const handler = (_: Electron.IpcRendererEvent, payload: T): void => cb(payload)
+  ipcRenderer.on(channel, handler)
+  return () => ipcRenderer.removeListener(channel, handler)
 }
 
 if (process.contextIsolated) {

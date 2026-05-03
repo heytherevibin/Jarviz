@@ -7,10 +7,7 @@ import { LocalWakeWord } from './voice/LocalWakeWord'
 import { PicovoiceWakeWord } from './voice/PicovoiceWakeWord'
 import { speakLocal, stopLocalSpeech, isSpeakingLocal } from './voice/LocalTTS'
 import { JarvizFSM, JarvizState } from './state/JarvizFSM'
-import { SettingsOverlay } from './SettingsOverlay'
-import { TranscriptOverlay } from './TranscriptOverlay'
 import { HUDLayer } from './HUDLayer'
-import { OrbHUDWidgets } from './OrbHUDWidgets'
 
 declare global {
   interface Window {
@@ -448,8 +445,6 @@ export default function App() {
   const followUpTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const [caption, setCaption] = useState({ phase: 'Ready', user: '', reply: '' })
-  const [settingsOpen, setSettingsOpen] = useState(false)
-  const [transcriptsOpen, setTranscriptsOpen] = useState(false)
   const [updateBanner, setUpdateBanner] = useState<{ state: string; progress?: number; message?: string } | null>(null)
   const [hudState, setHudState] = useState<JarvizState>('idle')
   const [hudAmp, setHudAmp]   = useState(0)
@@ -461,6 +456,21 @@ export default function App() {
     const id = setInterval(() => setUptime(Date.now() - bootTs), 500)
     return () => clearInterval(id)
   }, [bootTs])
+
+  // Throttle panel relays to ~10 Hz max — avoids IPC spam during rapid FSM changes
+  const lastRelayRef = useRef({ state: 0, caption: 0 })
+  const relayState = useCallback((s: string): void => {
+    const now = Date.now()
+    if (now - lastRelayRef.current.state < 80) return
+    lastRelayRef.current.state = now
+    try { window.jarviz?.relayState?.(s) } catch { /* noop */ }
+  }, [])
+  const relayCaption = useCallback((c: { phase: string; user: string; reply: string }): void => {
+    const now = Date.now()
+    if (now - lastRelayRef.current.caption < 100) return
+    lastRelayRef.current.caption = now
+    try { window.jarviz?.relayCaption?.(c) } catch { /* noop */ }
+  }, [])
 
   const setOrbAmp = useCallback((v: number) => {
     sceneRef.current?.setAudioAmplitude(v)
@@ -613,6 +623,9 @@ export default function App() {
       rlog(`[FSM] ${oldState} → ${newState} (${event.type})`)
 
       setHudState(newState)
+      // Forward state + caption to main process so the menubar panel can mirror them
+      relayState(newState)
+
       setCaption(prev => {
         const phase = PHASE_LABEL[newState] ?? newState
         let user = prev.user
@@ -623,7 +636,9 @@ export default function App() {
           user = ''
           reply = ''
         }
-        return { phase, user, reply }
+        const next = { phase, user, reply }
+        relayCaption(next)
+        return next
       })
 
       scene.setState(FSM_TO_ORB[newState])
@@ -726,9 +741,16 @@ export default function App() {
 
     rafRef.current = requestAnimationFrame(driveAudio)
 
-    window.jarviz?.getWhisperModel?.()
-      .then(key => loadWhisper(msg => rlog(`[Whisper] ${msg}`), key))
-      .catch(() => loadWhisper(msg => rlog(`[Whisper] ${msg}`)))
+    // Defer Whisper download to idle time so the app boots instantly.
+    // The wake word + transcription path will await this lazily on first use anyway.
+    const idleLoad = (window as unknown as { requestIdleCallback?: (cb: () => void) => void }).requestIdleCallback
+    const kickoffWhisper = (): void => {
+      window.jarviz?.getWhisperModel?.()
+        .then(key => loadWhisper(msg => rlog(`[Whisper] ${msg}`), key))
+        .catch(() => loadWhisper(msg => rlog(`[Whisper] ${msg}`)))
+    }
+    if (idleLoad) idleLoad(kickoffWhisper)
+    else setTimeout(kickoffWhisper, 1500)
 
     // ── Wake word ────────────────────────────────────────────────────────────
     const ww = new LocalWakeWord()
@@ -774,12 +796,13 @@ export default function App() {
       fsm.send({ type: 'ACTIVATE' })
     })
 
+    // Settings + Transcripts now live in the menubar panel — orb window stays clean
     const removeOpenSettings = window.jarviz?.onOpenSettings(() => {
-      setSettingsOpen(true)
+      window.jarviz?.panel?.show?.('settings')
     })
 
     const removeOpenTranscripts = window.jarviz?.onOpenTranscripts(() => {
-      setTranscriptsOpen(true)
+      window.jarviz?.panel?.show?.('transcripts')
     })
 
     const removeUpdaterStatus = window.jarviz?.onUpdaterStatus(s => {
@@ -900,14 +923,6 @@ export default function App() {
   useEffect(() => {
     const onEsc = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return
-      if (settingsOpen) {
-        setSettingsOpen(false)
-        return
-      }
-      if (transcriptsOpen) {
-        setTranscriptsOpen(false)
-        return
-      }
       const fsm = fsmRef.current
       if (!fsm || fsm.state === 'idle') return
       if (fsm.state === 'thinking') window.jarviz?.agent?.cancel()
@@ -915,7 +930,7 @@ export default function App() {
     }
     window.addEventListener('keydown', onEsc)
     return () => window.removeEventListener('keydown', onEsc)
-  }, [settingsOpen, transcriptsOpen])
+  }, [])
 
   // ── Drag + click handling ──────────────────────────────────────────────────
   const isInsideOrb = useCallback((e: React.MouseEvent) => {
@@ -970,119 +985,6 @@ export default function App() {
         size={Math.min(shellSize.w, shellSize.h)}
         amp={hudAmp}
       />
-      <OrbHUDWidgets state={hudState} amp={hudAmp} uptime={uptime} />
-
-      {/* Settings gear button — always visible at top-right so user can find it */}
-      <button
-        type="button"
-        data-testid="settings-gear-button"
-        title="Settings  (Cmd/Ctrl+,)"
-        onClick={(e) => { e.stopPropagation(); setSettingsOpen(true) }}
-        onMouseDown={(e) => e.stopPropagation()}
-        style={{
-          position:    'fixed',
-          top:         12,
-          right:       12,
-          zIndex:      30,
-          width:       28, height: 28,
-          borderRadius: 14,
-          background:  'rgba(8,10,18,0.65)',
-          border:      '1px solid rgba(255,255,255,0.18)',
-          backdropFilter: 'blur(12px)',
-          WebkitBackdropFilter: 'blur(12px)',
-          cursor:      'pointer',
-          display:     'flex',
-          alignItems:  'center',
-          justifyContent: 'center',
-          color:       'rgba(255,255,255,0.85)',
-          padding:     0,
-          transition:  'background 0.2s, color 0.2s, border-color 0.2s',
-        }}
-        onMouseEnter={(e) => {
-          (e.currentTarget as HTMLButtonElement).style.background = 'rgba(120,80,220,0.30)'
-          ;(e.currentTarget as HTMLButtonElement).style.borderColor = 'rgba(160,120,255,0.50)'
-        }}
-        onMouseLeave={(e) => {
-          (e.currentTarget as HTMLButtonElement).style.background = 'rgba(8,10,18,0.65)'
-          ;(e.currentTarget as HTMLButtonElement).style.borderColor = 'rgba(255,255,255,0.18)'
-        }}
-      >
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-          <circle cx="12" cy="12" r="3" />
-          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
-        </svg>
-      </button>
-      <div
-        style={hudWrapStyle}
-        aria-live="polite"
-        aria-atomic="true"
-        role="status"
-      >
-        <div style={hudCardStyle}>
-          <div style={hudPhaseRowStyle}>
-            <span data-testid="hud-state-dot" style={hudDotStyle(STATE_DOT_COLOR[hudState] ?? '#8AB4F8')} />
-            <span style={hudPhaseStyle} title={caption.phase}>{caption.phase}</span>
-            <span style={{
-              fontSize: 9, fontWeight: 600, opacity: 0.55, letterSpacing: '0.10em',
-              textTransform: 'uppercase', fontVariantNumeric: 'tabular-nums',
-            }}>
-              JARVIZ
-            </span>
-          </div>
-          {caption.user ? (
-            <div style={hudRowStyle} title={caption.user}>
-              <span style={{
-                ...hudLabelStyle,
-                color: '#8AB4F8',
-                background: 'rgba(138,180,248,0.10)',
-              }}>You</span>
-              <span style={{ verticalAlign: 'middle' }}>{caption.user}</span>
-            </div>
-          ) : null}
-          {caption.reply ? (
-            <div style={{ ...hudRowStyle, marginTop: caption.user ? 4 : 0 }} title={caption.reply}>
-              <span style={{
-                ...hudLabelStyle,
-                color: '#FBBC04',
-                background: 'rgba(251,188,4,0.10)',
-              }}>Jarviz</span>
-              <span style={{ verticalAlign: 'middle' }}>{caption.reply}</span>
-            </div>
-          ) : null}
-        </div>
-      </div>
-      <SettingsOverlay open={settingsOpen} onClose={() => setSettingsOpen(false)} />
-      <TranscriptOverlay open={transcriptsOpen} onClose={() => setTranscriptsOpen(false)} />
-      {updateBanner && updateBanner.state !== 'error' && (
-        <div
-          data-testid="update-banner"
-          style={{
-            position: 'fixed', top: 12, left: '50%', transform: 'translateX(-50%)',
-            zIndex: 90, background: 'rgba(28,32,44,0.96)',
-            border: '1px solid rgba(160,120,255,0.3)',
-            borderRadius: 10, padding: '8px 14px',
-            fontFamily: 'system-ui, -apple-system, sans-serif',
-            fontSize: 12, color: '#fff', pointerEvents: 'auto',
-            boxShadow: '0 8px 24px rgba(0,0,0,0.5)',
-          }}
-        >
-          {updateBanner.state === 'available'    && '↻ Update available — downloading…'}
-          {updateBanner.state === 'downloading'  && `↻ Update: ${Math.round(updateBanner.progress ?? 0)}%`}
-          {updateBanner.state === 'ready'        && (
-            <>
-              ✓ Update ready —{' '}
-              <button
-                type="button"
-                data-testid="update-install-btn"
-                onClick={() => window.jarviz.installUpdate()}
-                style={{ marginLeft: 6, padding: '2px 10px', borderRadius: 6, border: 'none', cursor: 'pointer', background: '#A142F4', color: '#fff', fontWeight: 700 }}
-              >
-                Restart to install
-              </button>
-            </>
-          )}
-        </div>
-      )}
     </div>
   )
 }

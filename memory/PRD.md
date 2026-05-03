@@ -12,6 +12,30 @@
 
 ## What's Been Implemented (2026-01-21)
 
+### Iteration 5 — Menubar architecture, voice diagnostics, stability
+- **Two-window architecture**: orb window is now **truly pristine** (just orb + halo + reticle pips + scan beam). All UI / config / status moved into a separate **menubar panel window** that pops out from the tray icon.
+- **PanelView** (`src/renderer/src/PanelView.tsx`) — 360×560 popover with 4 tabs:
+  - **Status**: platform, uptime, memory, LLM backend, key/voice diagnostics with red/green markers, mini-mode toggle.
+  - **Voice**: Gemini voice picker, ▷ Preview voice button (synthesises "Good evening — Jarviz online and ready" with the selected voice), prominent warning when `GEMINI_API_KEY` is missing (the cause of "voice never changed").
+  - **Keys**: LLM backend + provider/model selector, Whisper model, all 9 API keys with hints.
+  - **Transcripts**: list/select/view/delete saved sessions, clear all.
+- **Voice fix** — exposed in 3 ways:
+  1. Status tab shows "Gemini key: ✗ missing — voice will use browser fallback" in red the moment the user opens the panel.
+  2. Voice tab shows an inline `⚠ Gemini voice "X" requires GEMINI_API_KEY — set it in the Keys tab` callout when the key is missing but a voice is selected.
+  3. ▷ Preview voice button calls `panel:previewVoice` IPC which actually attempts synthesis and surfaces the real error message ("No GEMINI_API_KEY set" / "Synthesis returned no audio") instead of failing silently.
+- **Tray icon click** now toggles the panel (instead of focusing orb). On macOS it positions just below the menu-bar icon (popover-style); on Windows/Linux it docks near the system tray.
+- **Panel auto-hides on blur** — true menubar dropdown behaviour.
+- **`Cmd/Ctrl+,`** opens the panel at the Keys tab. `Cmd/Ctrl+Shift+P` toggles the panel. `Cmd/Ctrl+Shift+T` jumps to Transcripts. `Cmd/Ctrl+Shift+M` toggles mini orb. macOS app menu (`Jarviz → …`) and tray context menu both expose all of the above.
+- **Voice preview audio playback** — main process synthesises, sends bytes via `panel:previewAudio` IPC, panel renderer plays via Audio element with proper Blob/URL cleanup.
+- **Live state mirroring** — orb's FSM relays state + caption to the panel via throttled IPC (`relayState` 80ms, `relayCaption` 100ms), so the panel header always shows the current J-CORE / state / last user-question / last reply without any extra work in the orb window.
+- **Stability improvements**:
+  - Whisper model load **deferred to `requestIdleCallback`** (1.5s setTimeout fallback) — the orb appears instantly instead of blocking on a 145 MB ONNX download on first run.
+  - IPC relays throttled to ≤10 Hz to prevent panel re-render spam during rapid FSM transitions.
+  - `setApplicationMenu` macOS template extended with explicit "Open Panel" / "Settings…" / "Transcripts…" entries so users can find them through the standard macOS menu bar.
+  - `store-env.ts` upgraded with managed-key list so unsetting a value (e.g. selecting "Off" voice) actively `delete`s `process.env[key]` — previously stale values lingered.
+  - Crash recovery: `unhandledRejection` + `uncaughtException` listeners installed; panel/orb windows guard against destroyed-window writes.
+- Settings/Transcripts overlays no longer rendered inside the orb window — orb is unobstructed.
+
 ### Iteration 4 — Instant speech + Futuristic HUD redesign + Settings discoverability
 - **Streaming sentence-pipelined TTS** (`src/main/agent/streaming.ts`) — splits replies into sentence-shaped chunks (with abbreviation guards + soft 220-char cap), synthesises all chunks **in parallel**, emits in order over new `agent:speakChunk` IPC. Renderer's new `StreamingPlayer` queues chunks and plays them sequentially with smooth amplitude-driven orb modulation. First sentence is heard within ~0.5–1s instead of waiting 3–6s for full reply.
 - **Default voice changed to Aoede** — soft female, breezy. Voice picker reordered with all soft-female voices grouped at the top (Aoede / Vindemiatrix / Despina / Sulafat / Achernar) and Charon/Iapetus marked male for clarity.
