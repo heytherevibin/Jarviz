@@ -1,0 +1,309 @@
+{
+  "builtTestProducts" : [
+
+  ],
+  "copyCommands" : {
+
+  },
+  "explicitTargetDependencyImportCheckingMode" : {
+    "none" : {
+
+    }
+  },
+  "generatedSourceTargetSet" : [
+
+  ],
+  "pluginDescriptions" : [
+
+  ],
+  "swiftCommands" : {
+    "C.JarvizShell-arm64-apple-macosx-release.module" : {
+      "executable" : "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc",
+      "fileList" : "/Users/heytherevibin/Downloads/Code/Dev/jarviz/native/JarvizShell/.build/arm64-apple-macosx/release/JarvizShell.build/sources",
+      "importPath" : "/Users/heytherevibin/Downloads/Code/Dev/jarviz/native/JarvizShell/.build/arm64-apple-macosx/release/Modules",
+      "inputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/heytherevibin/Downloads/Code/Dev/jarviz/native/JarvizShell/Sources/JarvizShell/ContentView.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/heytherevibin/Downloads/Code/Dev/jarviz/native/JarvizShell/Sources/JarvizShell/JarvizShellApp.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/heytherevibin/Downloads/Code/Dev/jarviz/native/JarvizShell/Sources/JarvizShell/JarvizWebView.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/heytherevibin/Downloads/Code/Dev/jarviz/native/JarvizShell/Sources/JarvizShell/PreferencesView.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/heytherevibin/Downloads/Code/Dev/jarviz/native/JarvizShell/Sources/JarvizShell/ShellAppDelegate.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/heytherevibin/Downloads/Code/Dev/jarviz/native/JarvizShell/.build/arm64-apple-macosx/release/swift-version--58304C5D6DBC2206.txt"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/heytherevibin/Downloads/Code/Dev/jarviz/native/JarvizShell/.build/arm64-apple-macosx/release/JarvizShell.build/sources"
+        }
+      ],
+      "isLibrary" : false,
+      "moduleName" : "JarvizShell",
+      "moduleOutputPath" : "/Users/heytherevibin/Downloads/Code/Dev/jarviz/native/JarvizShell/.build/arm64-apple-macosx/release/Modules/JarvizShell.swiftmodule",
+      "objects" : [
+        "/Users/heytherevibin/Downloads/Code/Dev/jarviz/native/JarvizShell/.build/arm64-apple-macosx/release/JarvizShell.build/ContentView.swift.o",
+        "/Users/heytherevibin/Downloads/Code/Dev/jarviz/native/JarvizShell/.build/arm64-apple-macosx/release/JarvizShell.build/JarvizShellApp.swift.o",
+        "/Users/heytherevibin/Downloads/Code/Dev/jarviz/native/JarvizShell/.build/arm64-apple-macosx/release/JarvizShell.build/JarvizWebView.swift.o",
+        "/Users/heytherevibin/Downloads/Code/Dev/jarviz/native/JarvizShell/.build/arm64-apple-macosx/release/JarvizShell.build/PreferencesView.swift.o",
+        "/Users/heytherevibin/Downloads/Code/Dev/jarviz/native/JarvizShell/.build/arm64-apple-macosx/release/JarvizShell.build/ShellAppDelegate.swift.o"
+      ],
+      "otherArguments" : [
+        "-target",
+        "arm64-apple-macosx13.0",
+        "-whole-module-optimization",
+        "-num-threads",
+        "18",
+        "-serialize-diagnostics",
+        "-O",
+        "-j18",
+        "-DSWIFT_PACKAGE",
+        "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+        "-module-cache-path",
+        "/Users/heytherevibin/Downloads/Code/Dev/jarviz/native/JarvizShell/.build/arm64-apple-macosx/release/ModuleCache",
+        "-parseable-output",
+        "-Xfrontend",
+        "-entry-point-function-name",
+        "-Xfrontend",
+        "JarvizShell_main",
+        "-color-diagnostics",
+        "-swift-version",
+        "5",
+        "-plugin-path",
+        "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing",
+        "-sdk",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.4.sdk",
+        "-F",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+        "-I",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+        "-L",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+        "-g",
+        "-Xcc",
+        "-isysroot",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.4.sdk",
+        "-Xcc",
+        "-F",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+        "-Xcc",
+        "-fPIC",
+        "-Xcc",
+        "-g",
+        "-package-name",
+        "jarvizshell"
+      ],
+      "outputFileMapPath" : "/Users/heytherevibin/Downloads/Code/Dev/jarviz/native/JarvizShell/.build/arm64-apple-macosx/release/JarvizShell.build/output-file-map.json",
+      "outputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/heytherevibin/Downloads/Code/Dev/jarviz/native/JarvizShell/.build/arm64-apple-macosx/release/JarvizShell.build/ContentView.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/heytherevibin/Downloads/Code/Dev/jarviz/native/JarvizShell/.build/arm64-apple-macosx/release/JarvizShell.build/JarvizShellApp.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/heytherevibin/Downloads/Code/Dev/jarviz/native/JarvizShell/.build/arm64-apple-macosx/release/JarvizShell.build/JarvizWebView.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/heytherevibin/Downloads/Code/Dev/jarviz/native/JarvizShell/.build/arm64-apple-macosx/release/JarvizShell.build/PreferencesView.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/heytherevibin/Downloads/Code/Dev/jarviz/native/JarvizShell/.build/arm64-apple-macosx/release/JarvizShell.build/ShellAppDelegate.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/heytherevibin/Downloads/Code/Dev/jarviz/native/JarvizShell/.build/arm64-apple-macosx/release/Modules/JarvizShell.swiftmodule"
+        }
+      ],
+      "prepareForIndexing" : false,
+      "sources" : [
+        "/Users/heytherevibin/Downloads/Code/Dev/jarviz/native/JarvizShell/Sources/JarvizShell/ContentView.swift",
+        "/Users/heytherevibin/Downloads/Code/Dev/jarviz/native/JarvizShell/Sources/JarvizShell/JarvizShellApp.swift",
+        "/Users/heytherevibin/Downloads/Code/Dev/jarviz/native/JarvizShell/Sources/JarvizShell/JarvizWebView.swift",
+        "/Users/heytherevibin/Downloads/Code/Dev/jarviz/native/JarvizShell/Sources/JarvizShell/PreferencesView.swift",
+        "/Users/heytherevibin/Downloads/Code/Dev/jarviz/native/JarvizShell/Sources/JarvizShell/ShellAppDelegate.swift"
+      ],
+      "tempsPath" : "/Users/heytherevibin/Downloads/Code/Dev/jarviz/native/JarvizShell/.build/arm64-apple-macosx/release/JarvizShell.build",
+      "wholeModuleOptimization" : true
+    }
+  },
+  "swiftFrontendCommands" : {
+
+  },
+  "swiftTargetScanArgs" : {
+    "JarvizShell" : [
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc",
+      "-module-name",
+      "JarvizShell",
+      "-package-name",
+      "jarvizshell",
+      "-c",
+      "/Users/heytherevibin/Downloads/Code/Dev/jarviz/native/JarvizShell/Sources/JarvizShell/ContentView.swift",
+      "/Users/heytherevibin/Downloads/Code/Dev/jarviz/native/JarvizShell/Sources/JarvizShell/JarvizShellApp.swift",
+      "/Users/heytherevibin/Downloads/Code/Dev/jarviz/native/JarvizShell/Sources/JarvizShell/JarvizWebView.swift",
+      "/Users/heytherevibin/Downloads/Code/Dev/jarviz/native/JarvizShell/Sources/JarvizShell/PreferencesView.swift",
+      "/Users/heytherevibin/Downloads/Code/Dev/jarviz/native/JarvizShell/Sources/JarvizShell/ShellAppDelegate.swift",
+      "-I",
+      "/Users/heytherevibin/Downloads/Code/Dev/jarviz/native/JarvizShell/.build/arm64-apple-macosx/release/Modules",
+      "-target",
+      "arm64-apple-macosx13.0",
+      "-whole-module-optimization",
+      "-num-threads",
+      "18",
+      "-serialize-diagnostics",
+      "-O",
+      "-j18",
+      "-DSWIFT_PACKAGE",
+      "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+      "-module-cache-path",
+      "/Users/heytherevibin/Downloads/Code/Dev/jarviz/native/JarvizShell/.build/arm64-apple-macosx/release/ModuleCache",
+      "-parseable-output",
+      "-Xfrontend",
+      "-entry-point-function-name",
+      "-Xfrontend",
+      "JarvizShell_main",
+      "-color-diagnostics",
+      "-swift-version",
+      "5",
+      "-plugin-path",
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing",
+      "-sdk",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.4.sdk",
+      "-F",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+      "-I",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+      "-L",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+      "-g",
+      "-Xcc",
+      "-isysroot",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.4.sdk",
+      "-Xcc",
+      "-F",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+      "-Xcc",
+      "-fPIC",
+      "-Xcc",
+      "-g",
+      "-package-name",
+      "jarvizshell",
+      "-driver-use-frontend-path",
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc"
+    ]
+  },
+  "targetDependencyMap" : {
+    "JarvizShell" : [
+
+    ]
+  },
+  "testDiscoveryCommands" : {
+
+  },
+  "testEntryPointCommands" : {
+
+  },
+  "traitConfiguration" : {
+    "default" : {
+
+    }
+  },
+  "writeCommands" : {
+    "/Users/heytherevibin/Downloads/Code/Dev/jarviz/native/JarvizShell/.build/arm64-apple-macosx/release/JarvizShell.build/sources" : {
+      "alwaysOutOfDate" : false,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<sources-file-list>"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/heytherevibin/Downloads/Code/Dev/jarviz/native/JarvizShell/Sources/JarvizShell/ContentView.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/heytherevibin/Downloads/Code/Dev/jarviz/native/JarvizShell/Sources/JarvizShell/JarvizShellApp.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/heytherevibin/Downloads/Code/Dev/jarviz/native/JarvizShell/Sources/JarvizShell/JarvizWebView.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/heytherevibin/Downloads/Code/Dev/jarviz/native/JarvizShell/Sources/JarvizShell/PreferencesView.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/heytherevibin/Downloads/Code/Dev/jarviz/native/JarvizShell/Sources/JarvizShell/ShellAppDelegate.swift"
+        }
+      ],
+      "outputFilePath" : "/Users/heytherevibin/Downloads/Code/Dev/jarviz/native/JarvizShell/.build/arm64-apple-macosx/release/JarvizShell.build/sources"
+    },
+    "/Users/heytherevibin/Downloads/Code/Dev/jarviz/native/JarvizShell/.build/arm64-apple-macosx/release/JarvizShell.product/Objects.LinkFileList" : {
+      "alwaysOutOfDate" : false,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<link-file-list>"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/heytherevibin/Downloads/Code/Dev/jarviz/native/JarvizShell/.build/arm64-apple-macosx/release/JarvizShell.build/ContentView.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/heytherevibin/Downloads/Code/Dev/jarviz/native/JarvizShell/.build/arm64-apple-macosx/release/JarvizShell.build/JarvizShellApp.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/heytherevibin/Downloads/Code/Dev/jarviz/native/JarvizShell/.build/arm64-apple-macosx/release/JarvizShell.build/JarvizWebView.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/heytherevibin/Downloads/Code/Dev/jarviz/native/JarvizShell/.build/arm64-apple-macosx/release/JarvizShell.build/PreferencesView.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/heytherevibin/Downloads/Code/Dev/jarviz/native/JarvizShell/.build/arm64-apple-macosx/release/JarvizShell.build/ShellAppDelegate.swift.o"
+        }
+      ],
+      "outputFilePath" : "/Users/heytherevibin/Downloads/Code/Dev/jarviz/native/JarvizShell/.build/arm64-apple-macosx/release/JarvizShell.product/Objects.LinkFileList"
+    },
+    "/Users/heytherevibin/Downloads/Code/Dev/jarviz/native/JarvizShell/.build/arm64-apple-macosx/release/swift-version--58304C5D6DBC2206.txt" : {
+      "alwaysOutOfDate" : true,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<swift-get-version>"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc"
+        }
+      ],
+      "outputFilePath" : "/Users/heytherevibin/Downloads/Code/Dev/jarviz/native/JarvizShell/.build/arm64-apple-macosx/release/swift-version--58304C5D6DBC2206.txt"
+    }
+  }
+}

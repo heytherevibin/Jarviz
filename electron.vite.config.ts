@@ -66,7 +66,14 @@ function syncOnnxWasmPlugin(): Plugin {
 
 export default defineConfig({
   main: {
-    plugins: [externalizeDepsPlugin(), copyTrayIntoMainOutPlugin()],
+    /** Bundle MCP SDK: Node 22 + this package's `exports` wildcard breaks `require('@modelcontextprotocol/sdk/client/stdio')` in production. */
+    plugins: [externalizeDepsPlugin({ exclude: ['@modelcontextprotocol/sdk'] }), copyTrayIntoMainOutPlugin()],
+    build: {
+      rollupOptions: {
+        /** Native `.node` — must load from node_modules at runtime, not roll into the bundle */
+        external: ['electron-liquid-glass'],
+      },
+    },
   },
   preload: {
     plugins: [externalizeDepsPlugin()],
