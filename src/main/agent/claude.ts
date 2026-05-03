@@ -4,8 +4,11 @@ import { TOOLS, executeTool } from './tools'
 
 type StateCallback = (state: 'thinking' | 'searching') => void
 
-const LLM_TIMEOUT_MS = 25000
+const LLM_TIMEOUT_MS = 35000
 const RETRY_DELAY_MS = 2000
+const MAX_TURNS = 10
+
+const EMERGENT_BASE_URL = 'https://integrations.emergentagent.com/llm'
 
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
   return Promise.race([
@@ -37,35 +40,95 @@ async function withRetry<T>(
   throw lastErr
 }
 
-const SYSTEM = `You are Jarviz, a highly capable AI assistant modeled after Iron Man's JARVIS.
-You are precise, confident, and speak with understated authority.
+const SYSTEM = `You are Jarviz, a fully autonomous desktop AI agent modeled after Iron Man's JARVIS.
+You are precise, confident, and speak with understated authority. You can see, hear, and act on the user's machine.
 
-Tools available — use them aggressively for any factual question:
-- get_weather for weather
-- get_time for current time anywhere
-- wikipedia for facts about people, places, history, science
-- get_news for current headlines
-- currency_convert, crypto_price, stock_price for finance
-- define_word for word meanings
-- calculate for math
-- get_location for "where am I"
-- web_search as a general fallback for anything else current
-- read_file, list_directory, search_files for workspace files (paths must be absolute)
+You have a rich toolset — use it aggressively and chain tools together to complete multi-step requests:
 
-Rules:
-- Always pick a tool when the answer requires current/factual data — never guess.
+INFORMATION
+- web_search, wikipedia, get_news, get_weather, get_time, get_location, define_word, calculate
+- crypto_price, stock_price, currency_convert
+
+USER MACHINE
+- read_file, list_directory, search_files (paths must be absolute)
+- read_clipboard, write_clipboard
+- system_info — OS, CPU, memory of the user's machine
+
+ACTIONS (you can DO things, not just answer)
+- open_url — open a webpage in the user's default browser
+- open_app — launch a desktop app by name (e.g. "Spotify", "Calculator", "Visual Studio Code")
+- open_path — open a file or folder using the OS default app
+- run_command — execute a shell command (use for git, ls, mkdir, ffmpeg, etc.)
+- screenshot — capture the primary display, save it, and read its dimensions
+- notify — send a native desktop notification
+
+AGENT BEHAVIOR
+- Always pick a tool when the answer requires current/factual data or a real action — never guess.
+- For multi-step requests, call as many tools as needed in sequence (e.g. screenshot → web_search → open_url).
+- Be decisive. If asked "open Spotify and play lo-fi", call open_app then web_search/open_url for the playlist.
+- After tool returns, synthesize into ONE clear spoken answer with the actual numbers / outcome.
 - Keep every response under 3 sentences — you are a voice assistant, not a document.
-- Never say "As an AI" or similar disclaimers. Address the user directly. Be decisive.
-- After a tool returns, synthesize into one clear spoken answer with the actual numbers.
-- Multilingual: detect the user's language (English, Malayalam, Tamil, Hindi, etc.) and reply in the SAME language they used. If they mix languages, match their style.`
+- Never say "As an AI" or similar disclaimers. Address the user directly.
+- Multilingual: detect the user's language (English, Malayalam, Tamil, Hindi, etc.) and reply in the SAME language.`
 
-// All three backends share the same OpenAI-compatible message format
+// All OpenAI-compatible backends share the same message format
 type Message = Groq.Chat.ChatCompletionMessageParam
 
 const GROQ_TOOLS: Groq.Chat.ChatCompletionTool[] = TOOLS.map(t => ({
   type: 'function' as const,
   function: { name: t.name, description: t.description, parameters: t.input_schema },
 }))
+
+// ── Generic OpenAI-compatible loop (used by Emergent + xAI + native OpenAI) ──
+async function runOpenAICompatible(
+  messages: Message[],
+  onState: StateCallback,
+  opts: { apiKey: string; baseURL?: string; model: string; label: string },
+): Promise<{ reply: string; messages: Message[] }> {
+  const Openai = (await import('openai')).default
+  const client = new Openai({ apiKey: opts.apiKey, baseURL: opts.baseURL })
+
+  const tools = TOOLS.map(t => ({
+    type: 'function' as const,
+    function: { name: t.name, description: t.description, parameters: t.input_schema },
+  }))
+
+  for (let turn = 0; turn < MAX_TURNS; turn++) {
+    const response = await withTimeout(
+      client.chat.completions.create({
+        model:       opts.model,
+        max_tokens:  1024,
+        messages:    [{ role: 'system', content: SYSTEM }, ...messages] as never,
+        tools,
+        tool_choice: 'auto',
+      }),
+      LLM_TIMEOUT_MS,
+      opts.label,
+    )
+
+    const msg = response.choices[0].message
+    messages.push(msg as unknown as Message)
+    const finish = response.choices[0].finish_reason
+
+    if (finish === 'stop' || (!msg.tool_calls?.length && msg.content)) {
+      return { reply: msg.content?.trim() ?? '', messages }
+    }
+
+    if (msg.tool_calls?.length) {
+      onState('searching')
+      for (const call of msg.tool_calls) {
+        if (call.type !== 'function') continue
+        let args: Record<string, unknown> = {}
+        try { args = JSON.parse(call.function.arguments || '{}') } catch { /* empty */ }
+        const result = await executeTool(call.function.name, args)
+        messages.push({ role: 'tool', tool_call_id: call.id, content: result } as Message)
+      }
+      onState('thinking')
+    }
+  }
+
+  return { reply: 'I was unable to complete that request.', messages }
+}
 
 // ── Groq backend ─────────────────────────────────────────────────────────────
 async function runGroq(
@@ -74,11 +137,11 @@ async function runGroq(
 ): Promise<{ reply: string; messages: Message[] }> {
   const client = new Groq({ apiKey: process.env.GROQ_API_KEY })
 
-  for (let turn = 0; turn < 8; turn++) {
+  for (let turn = 0; turn < MAX_TURNS; turn++) {
     const response = await withTimeout(
       client.chat.completions.create({
         model:       'llama-3.3-70b-versatile',
-        max_tokens:  512,
+        max_tokens:  1024,
         messages:    [{ role: 'system', content: SYSTEM }, ...messages],
         tools:       GROQ_TOOLS,
         tool_choice: 'auto',
@@ -106,71 +169,17 @@ async function runGroq(
   return { reply: 'I was unable to complete that request.', messages }
 }
 
-// ── xAI Grok backend (OpenAI-compatible API) ─────────────────────────────────
-async function runXAI(
-  messages: Message[],
-  onState: StateCallback,
-): Promise<{ reply: string; messages: Message[] }> {
-  // xAI uses OpenAI-compatible API at https://api.x.ai/v1
-  const Openai = (await import('openai')).default
-  const client = new Openai({
-    apiKey:  process.env.XAI_API_KEY,
-    baseURL: 'https://api.x.ai/v1',
-  })
-
-  const tools = TOOLS.map(t => ({
-    type: 'function' as const,
-    function: { name: t.name, description: t.description, parameters: t.input_schema },
-  }))
-
-  for (let turn = 0; turn < 8; turn++) {
-    const response = await withTimeout(
-      client.chat.completions.create({
-        model:       'grok-3-fast',
-        max_tokens:  512,
-        messages:    [{ role: 'system', content: SYSTEM }, ...messages] as never,
-        tools,
-        tool_choice: 'auto',
-      }),
-      LLM_TIMEOUT_MS,
-      'xAI',
-    )
-
-    const msg = response.choices[0].message
-    messages.push(msg as unknown as Message)
-    const finish = response.choices[0].finish_reason
-
-    if (finish === 'stop') return { reply: msg.content?.trim() ?? '', messages }
-
-    if (finish === 'tool_calls' && msg.tool_calls?.length) {
-      onState('searching')
-      for (const call of msg.tool_calls) {
-        const result = await executeTool(call.function.name, JSON.parse(call.function.arguments))
-        messages.push({ role: 'tool', tool_call_id: call.id, content: result } as Message)
-      }
-      onState('thinking')
-    }
-  }
-
-  return { reply: 'I was unable to complete that request.', messages }
-}
-
 // ── Anthropic backend ─────────────────────────────────────────────────────────
-/** Convert OpenAI-format chat history → Anthropic Messages API shape (preserves tool rounds). */
 function openAiToAnthropicMessages(messages: Message[]): Anthropic.Messages.MessageParam[] {
   const out: Anthropic.Messages.MessageParam[] = []
   let i = 0
   while (i < messages.length) {
     const m = messages[i]
-    if (m.role === 'system') {
-      i++
-      continue
-    }
+    if (m.role === 'system') { i++; continue }
 
     if (m.role === 'user') {
       out.push({ role: 'user', content: typeof m.content === 'string' ? m.content : '' })
-      i++
-      continue
+      i++; continue
     }
 
     if (m.role === 'assistant') {
@@ -184,9 +193,7 @@ function openAiToAnthropicMessages(messages: Message[]): Anthropic.Messages.Mess
         if (am.content) blocks.push({ type: 'text', text: am.content })
         for (const tc of am.tool_calls) {
           let input: Record<string, unknown> = {}
-          try {
-            input = JSON.parse(tc.function.arguments || '{}') as Record<string, unknown>
-          } catch { /* empty */ }
+          try { input = JSON.parse(tc.function.arguments || '{}') as Record<string, unknown> } catch { /* empty */ }
           blocks.push({ type: 'tool_use', id: tc.id, name: tc.function.name, input })
         }
         out.push({ role: 'assistant', content: blocks })
@@ -209,8 +216,7 @@ function openAiToAnthropicMessages(messages: Message[]): Anthropic.Messages.Mess
     if (m.role === 'tool') {
       const tm = m as { role: 'tool'; tool_call_id: string; content: string }
       out.push({ role: 'user', content: [{ type: 'tool_result', tool_use_id: tm.tool_call_id, content: tm.content }] })
-      i++
-      continue
+      i++; continue
     }
 
     i++
@@ -224,17 +230,17 @@ async function runAnthropic(
 ): Promise<{ reply: string; messages: Message[] }> {
   const AnthropicSdk = (await import('@anthropic-ai/sdk')).default
   const client = new AnthropicSdk({ apiKey: process.env.ANTHROPIC_API_KEY })
-  const { TOOLS: ATOOLS } = await import('./tools')
+  const model = process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-5-20250929'
 
-  for (let turn = 0; turn < 8; turn++) {
+  for (let turn = 0; turn < MAX_TURNS; turn++) {
     const anthMsgs = openAiToAnthropicMessages(messages)
 
     const response = await withTimeout(
       client.messages.create({
-        model:      'claude-haiku-4-5-20251001',
-        max_tokens: 512,
+        model,
+        max_tokens: 1024,
         system:     SYSTEM,
-        tools:      ATOOLS,
+        tools:      TOOLS,
         messages:   anthMsgs,
       }),
       LLM_TIMEOUT_MS,
@@ -255,25 +261,14 @@ async function runAnthropic(
     const oaiToolCalls = toolUses.map(tu => ({
       id: tu.id,
       type: 'function' as const,
-      function: {
-        name:      tu.name,
-        arguments: JSON.stringify((tu.input ?? {}) as Record<string, unknown>),
-      },
+      function: { name: tu.name, arguments: JSON.stringify((tu.input ?? {}) as Record<string, unknown>) },
     }))
 
-    messages.push({
-      role:       'assistant',
-      content:    replyText || null,
-      tool_calls: oaiToolCalls,
-    } as Message)
+    messages.push({ role: 'assistant', content: replyText || null, tool_calls: oaiToolCalls } as Message)
 
     for (const tu of toolUses) {
       const result = await executeTool(tu.name, (tu.input ?? {}) as Record<string, unknown>)
-      messages.push({
-        role: 'tool',
-        tool_call_id: tu.id,
-        content: result,
-      } as Message)
+      messages.push({ role: 'tool', tool_call_id: tu.id, content: result } as Message)
     }
 
     onState('thinking')
@@ -282,7 +277,7 @@ async function runAnthropic(
   return { reply: 'I was unable to complete that request.', messages }
 }
 
-// ── Google Gemini backend (REST API — multilingual, fast, free tier) ─────────
+// ── Google Gemini backend (REST) ─────────────────────────────────────────────
 type GeminiPart =
   | { text: string }
   | { functionCall: { name: string; args: Record<string, unknown> } }
@@ -297,10 +292,9 @@ async function runGemini(
   const apiKey = process.env.GEMINI_API_KEY
   if (!apiKey) throw new Error('GEMINI_API_KEY not set')
 
-  const model = process.env.GEMINI_MODEL || 'gemini-2.0-flash'
+  const model = process.env.GEMINI_MODEL || 'gemini-2.5-pro'
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`
 
-  // Convert message history (OpenAI-format) → Gemini contents
   const contents: GeminiContent[] = messages
     .filter(m => m.role === 'user' || m.role === 'assistant')
     .map(m => ({
@@ -308,14 +302,13 @@ async function runGemini(
       parts: [{ text: String(m.content ?? '') }],
     }))
 
-  // Convert tool definitions → Gemini function declarations
   const functionDeclarations = TOOLS.map(t => ({
     name:        t.name,
     description: t.description,
     parameters:  t.input_schema,
   }))
 
-  for (let turn = 0; turn < 8; turn++) {
+  for (let turn = 0; turn < MAX_TURNS; turn++) {
     const ctl = new AbortController()
     const timer = setTimeout(() => ctl.abort(), LLM_TIMEOUT_MS)
     let res: Response
@@ -328,7 +321,7 @@ async function runGemini(
           systemInstruction: { parts: [{ text: SYSTEM }] },
           contents,
           tools:             [{ functionDeclarations }],
-          generationConfig:  { maxOutputTokens: 512, temperature: 0.7 },
+          generationConfig:  { maxOutputTokens: 1024, temperature: 0.7 },
         }),
       })
     } catch (e) {
@@ -355,12 +348,10 @@ async function runGemini(
     const replyText = textParts.map(p => p.text).join(' ').trim()
 
     if (fnCalls.length === 0) {
-      // Pure text answer — done
       messages.push({ role: 'assistant', content: replyText })
       return { reply: replyText, messages }
     }
 
-    // Tool call(s) — record model turn, run tools, append responses
     onState('searching')
     contents.push({ role: 'model', parts })
 
@@ -378,13 +369,63 @@ async function runGemini(
   return { reply: 'I was unable to complete that request.', messages }
 }
 
+// ── Emergent Universal backend ───────────────────────────────────────────────
+// Single key works for OpenAI / Anthropic / Gemini via OpenAI-compatible proxy.
+async function runEmergent(
+  messages: Message[],
+  onState: StateCallback,
+): Promise<{ reply: string; messages: Message[] }> {
+  const apiKey = process.env.EMERGENT_LLM_KEY
+  if (!apiKey) throw new Error('EMERGENT_LLM_KEY not set')
+
+  const provider = (process.env.EMERGENT_PROVIDER || 'anthropic').toLowerCase()
+  const rawModel = process.env.EMERGENT_MODEL || 'claude-sonnet-4-5-20250929'
+
+  // Gemini models must be prefixed with "gemini/" through the Emergent proxy
+  const model = provider === 'gemini' && !rawModel.startsWith('gemini/')
+    ? `gemini/${rawModel}`
+    : rawModel
+
+  return runOpenAICompatible(messages, onState, {
+    apiKey,
+    baseURL: EMERGENT_BASE_URL,
+    model,
+    label: `Emergent (${provider}/${rawModel})`,
+  })
+}
+
+// ── xAI Grok backend (OpenAI-compatible) ─────────────────────────────────────
+async function runXAI(
+  messages: Message[],
+  onState: StateCallback,
+): Promise<{ reply: string; messages: Message[] }> {
+  return runOpenAICompatible(messages, onState, {
+    apiKey:  process.env.XAI_API_KEY ?? '',
+    baseURL: 'https://api.x.ai/v1',
+    model:   process.env.XAI_MODEL || 'grok-3-fast',
+    label:   'xAI',
+  })
+}
+
+// ── Native OpenAI backend ────────────────────────────────────────────────────
+async function runOpenAI(
+  messages: Message[],
+  onState: StateCallback,
+): Promise<{ reply: string; messages: Message[] }> {
+  return runOpenAICompatible(messages, onState, {
+    apiKey: process.env.OPENAI_API_KEY ?? '',
+    model:  process.env.OPENAI_MODEL || 'gpt-5.2',
+    label:  'OpenAI',
+  })
+}
+
 // ── Public entry point ────────────────────────────────────────────────────────
 export async function runAgent(
   text: string,
   history: Message[],
   onState: StateCallback,
 ): Promise<{ reply: string; history: Message[] }> {
-  const backend = (process.env.LLM_BACKEND ?? 'groq').toLowerCase()
+  const backend = (process.env.LLM_BACKEND ?? 'emergent').toLowerCase()
 
   const messages: Message[] = [
     ...history,
@@ -393,17 +434,18 @@ export async function runAgent(
 
   onState('thinking')
 
-  // Available backends keyed by env name
   type Runner = () => Promise<{ reply: string; messages: Message[] }>
   const runners: Record<string, Runner | null> = {
+    emergent:  process.env.EMERGENT_LLM_KEY  ? () => runEmergent(messages, onState)  : null,
+    anthropic: process.env.ANTHROPIC_API_KEY ? () => runAnthropic(messages, onState) : null,
+    openai:    process.env.OPENAI_API_KEY    ? () => runOpenAI(messages, onState)    : null,
     gemini:    process.env.GEMINI_API_KEY    ? () => runGemini(messages, onState)    : null,
     groq:      process.env.GROQ_API_KEY      ? () => runGroq(messages, onState)      : null,
     xai:       process.env.XAI_API_KEY       ? () => runXAI(messages, onState)       : null,
-    anthropic: process.env.ANTHROPIC_API_KEY ? () => runAnthropic(messages, onState) : null,
   }
 
   // Preferred order — chosen backend first, then sensible fallback chain
-  const fallbackOrder = ['gemini', 'groq', 'xai', 'anthropic']
+  const fallbackOrder = ['emergent', 'anthropic', 'openai', 'gemini', 'groq', 'xai']
   const order = [backend, ...fallbackOrder.filter(b => b !== backend)]
 
   const backends: Runner[] = []
@@ -416,7 +458,7 @@ export async function runAgent(
   }
 
   if (backends.length === 0) {
-    throw new Error('No LLM API key set. Add GEMINI_API_KEY, GROQ_API_KEY, XAI_API_KEY, or ANTHROPIC_API_KEY to .env')
+    throw new Error('No LLM key configured. Open Settings (Cmd/Ctrl+,) and add the Emergent Universal Key, or your own Anthropic/OpenAI/Gemini key.')
   }
 
   let lastErr: unknown
@@ -431,7 +473,7 @@ export async function runAgent(
       )
       return { reply, history: updated.slice(-20) }
     } catch (e) {
-      console.error(`[Agent] backend ${i} failed, trying next:`, (e as Error).message?.slice(0, 120))
+      console.error(`[Agent] backend ${i} failed, trying next:`, (e as Error).message?.slice(0, 200))
       lastErr = e
     }
   }

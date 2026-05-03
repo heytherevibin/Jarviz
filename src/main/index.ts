@@ -33,7 +33,7 @@ let dragOffset = { x: 0, y: 0 }
 let agentAbort: AbortController | null = null
 
 // ── Agent session state ───────────────────────────────────────────────────────
-let conversationHistory: Array<{ role: string; content: string; [k: string]: unknown }> = []
+let conversationHistory: unknown[] = []
 let lastQueryAt = 0
 const SESSION_TIMEOUT_MS = 5 * 60 * 1000
 
@@ -205,7 +205,7 @@ function registerMainProcessHandlers(): void {
 
   ipcMain.handle('settings:get', () => ({
     envOverrides: store.get('envOverrides', {}) as Record<string, string>,
-    llmBackend:   store.get('llmBackend', process.env.LLM_BACKEND ?? 'groq') as string,
+    llmBackend:   store.get('llmBackend', process.env.LLM_BACKEND ?? 'emergent') as string,
     whisperModel: store.get('whisperModel', process.env.WHISPER_MODEL ?? 'base') as string,
   }))
 
@@ -245,7 +245,7 @@ function registerMainProcessHandlers(): void {
     try {
       const { reply, history } = await runAgent(
         text,
-        conversationHistory,
+        conversationHistory as never,
         (state) => sendState(state),
       )
       conversationHistory = history.slice(-20)

@@ -1,13 +1,23 @@
-// Jarviz tool layer — all free, mostly no-key services.
-// Every tool is wrapped in withTimeout + truncateOutput so a single slow/broken
-// upstream cannot stall the agent loop or blow up the conversation context.
+// Jarviz tool layer — autonomous agent capabilities.
+// Includes:
+//   • Information tools (web/wiki/news/weather/finance/dictionary/calc/location)
+//   • Filesystem tools (read/list/search)
+//   • System action tools (shell, open app/url, clipboard, screenshot, notify, system_info)
 
 import { readdir, readFile, stat } from 'fs/promises'
 import { join, extname } from 'path'
+import { exec } from 'child_process'
+import { promisify } from 'util'
+import { hostname, platform, arch, release, totalmem, freemem, cpus, userInfo, homedir } from 'os'
+import { app, BrowserWindow, clipboard, Notification, shell, desktopCapturer, screen } from 'electron'
 import type { Tool } from '@anthropic-ai/sdk/resources/messages'
+
+const execAsync = promisify(exec)
 
 const HTTP_TIMEOUT_MS = 6000
 const MAX_TOOL_OUTPUT = 2000
+const SHELL_TIMEOUT_MS = 15000
+const SHELL_MAX_BUFFER = 1024 * 256
 const TRANSIENT_CODES = new Set([429, 502, 503, 504])
 
 function truncate(s: string, max = MAX_TOOL_OUTPUT): string {
@@ -170,6 +180,82 @@ export const TOOLS: Tool[] = [
       required: ['directory', 'pattern'],
     },
   },
+  // ── System / agentic action tools ──────────────────────────────────────────
+  {
+    name: 'open_url',
+    description: 'Open a URL in the user\'s default web browser. Use for any web link or to launch a search in browser.',
+    input_schema: {
+      type: 'object' as const,
+      properties: { url: { type: 'string', description: 'Full URL including https://' } },
+      required: ['url'],
+    },
+  },
+  {
+    name: 'open_app',
+    description: 'Launch a desktop application by name (e.g. "Calculator", "Spotify", "Visual Studio Code", "Chrome"). Cross-platform.',
+    input_schema: {
+      type: 'object' as const,
+      properties: { name: { type: 'string', description: 'Application display name' } },
+      required: ['name'],
+    },
+  },
+  {
+    name: 'open_path',
+    description: 'Open a file or folder using the OS default application (e.g. open a folder in Finder/Explorer or a PDF in default viewer).',
+    input_schema: {
+      type: 'object' as const,
+      properties: { path: { type: 'string', description: 'Absolute path to file or folder' } },
+      required: ['path'],
+    },
+  },
+  {
+    name: 'run_command',
+    description: 'Execute a shell command on the user\'s machine. Use carefully — explain what you\'re doing first. Returns combined stdout+stderr. 15s timeout.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        command: { type: 'string', description: 'Shell command to run' },
+        cwd:     { type: 'string', description: 'Optional working directory' },
+      },
+      required: ['command'],
+    },
+  },
+  {
+    name: 'read_clipboard',
+    description: 'Read the current contents of the system clipboard.',
+    input_schema: { type: 'object' as const, properties: {} },
+  },
+  {
+    name: 'write_clipboard',
+    description: 'Write text to the system clipboard so the user can paste it.',
+    input_schema: {
+      type: 'object' as const,
+      properties: { text: { type: 'string', description: 'Text to copy' } },
+      required: ['text'],
+    },
+  },
+  {
+    name: 'screenshot',
+    description: 'Capture a screenshot of the primary display and return a short description of what is visible. Use for screen context awareness.',
+    input_schema: { type: 'object' as const, properties: {} },
+  },
+  {
+    name: 'notify',
+    description: 'Show a native desktop notification to the user.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        title: { type: 'string', description: 'Notification title' },
+        body:  { type: 'string', description: 'Notification body text' },
+      },
+      required: ['title', 'body'],
+    },
+  },
+  {
+    name: 'system_info',
+    description: 'Get information about the user\'s machine: OS, architecture, memory, CPU, hostname.',
+    input_schema: { type: 'object' as const, properties: {} },
+  },
 ]
 
 // ── Dispatcher ───────────────────────────────────────────────────────────────
@@ -195,6 +281,15 @@ export async function executeTool(name: string, input: ToolInput): Promise<strin
       case 'read_file':        out = await readFileContents(String(input.path ?? '')); break
       case 'list_directory':   out = await listDir(String(input.path ?? '')); break
       case 'search_files':     out = await searchFiles(String(input.directory ?? ''), String(input.pattern ?? '')); break
+      case 'open_url':         out = await openUrl(String(input.url ?? '')); break
+      case 'open_app':         out = await openApp(String(input.name ?? '')); break
+      case 'open_path':        out = await openPath(String(input.path ?? '')); break
+      case 'run_command':      out = await runCommand(String(input.command ?? ''), input.cwd ? String(input.cwd) : undefined); break
+      case 'read_clipboard':   out = readClipboardText(); break
+      case 'write_clipboard':  out = writeClipboardText(String(input.text ?? '')); break
+      case 'screenshot':       out = await captureScreenshot(); break
+      case 'notify':           out = showNotification(String(input.title ?? ''), String(input.body ?? '')); break
+      case 'system_info':      out = getSystemInfo(); break
       default:                 out = `Unknown tool: ${name}`
     }
     return truncate(out)
@@ -412,12 +507,10 @@ async function defineWord(word: string): Promise<string> {
 // ── Calculator (safe — no eval, only whitelisted tokens) ─────────────────────
 function calculate(expression: string): string {
   if (!expression) return 'No expression.'
-  // Allow digits, operators, parens, decimal, whitespace, and Math.* / lone identifiers we map
   const cleaned = expression.replace(/\s+/g, '')
   if (!/^[-+*/%().\d,e^sqrtablogincoexpiPI]+$/i.test(cleaned)) {
     return `Expression contains unsupported characters.`
   }
-  // Map common math names to Math.* — order matters (longer first)
   const mapped = expression
     .replace(/\^/g, '**')
     .replace(/\bpi\b/gi, 'Math.PI')
@@ -477,8 +570,142 @@ async function searchFiles(dir: string, pattern: string, depth = 4): Promise<str
         if (e.name.toLowerCase().includes(pattern.toLowerCase())) matches.push(full)
         if (e.isDirectory()) await walk(full, d - 1)
       }
-    } catch {}
+    } catch { /* ignore */ }
   }
   await walk(dir, depth)
   return matches.length ? matches.join('\n') : `No files matching "${pattern}".`
+}
+
+// ── System action tools ──────────────────────────────────────────────────────
+
+async function openUrl(url: string): Promise<string> {
+  if (!url) return 'No URL given.'
+  let target = url.trim()
+  if (!/^https?:\/\//i.test(target) && !/^mailto:|^file:/i.test(target)) {
+    target = 'https://' + target
+  }
+  await shell.openExternal(target)
+  return `Opened ${target}`
+}
+
+/** Try to launch an app cross-platform. macOS: `open -a`, Windows: `start`, Linux: best-effort which/xdg-open. */
+async function openApp(name: string): Promise<string> {
+  if (!name) return 'No app name given.'
+  const safe = name.replace(/"/g, '\\"')
+  const plat = process.platform
+
+  try {
+    if (plat === 'darwin') {
+      await execAsync(`open -a "${safe}"`, { timeout: SHELL_TIMEOUT_MS })
+      return `Launching "${name}" (macOS).`
+    }
+    if (plat === 'win32') {
+      await execAsync(`start "" "${safe}"`, { timeout: SHELL_TIMEOUT_MS, shell: 'cmd.exe' })
+      return `Launching "${name}" (Windows).`
+    }
+    // linux: try the binary directly, then a couple of common variants
+    const candidates = [name, name.toLowerCase(), name.replace(/\s+/g, '').toLowerCase()]
+    for (const c of candidates) {
+      try {
+        const which = await execAsync(`which "${c}"`, { timeout: 2000 })
+        if (which.stdout.trim()) {
+          exec(c, { timeout: SHELL_TIMEOUT_MS }, () => { /* fire and forget */ })
+          return `Launching "${c}" (Linux).`
+        }
+      } catch { /* try next */ }
+    }
+    return `Could not find an executable named "${name}" on PATH.`
+  } catch (e) {
+    return `Failed to launch "${name}": ${(e as Error).message}`
+  }
+}
+
+async function openPath(p: string): Promise<string> {
+  if (!p) return 'No path given.'
+  const err = await shell.openPath(p)
+  if (err) return `Could not open "${p}": ${err}`
+  return `Opened ${p}`
+}
+
+async function runCommand(command: string, cwd?: string): Promise<string> {
+  if (!command) return 'No command given.'
+  // Lightweight footgun guard — refuse the most catastrophic patterns outright.
+  const banned = [/\brm\s+-rf\s+\/(\s|$)/i, /\bmkfs\./i, /:\(\)\s*\{\s*:\|:&/i, /\bdd\s+if=.*of=\/dev\//i]
+  if (banned.some(rx => rx.test(command))) {
+    return `Refused: command appears destructive. Ask the user to run it manually if intended.`
+  }
+  try {
+    const { stdout, stderr } = await execAsync(command, {
+      timeout: SHELL_TIMEOUT_MS,
+      maxBuffer: SHELL_MAX_BUFFER,
+      cwd: cwd || process.cwd(),
+    })
+    const out = (stdout || '').trim()
+    const err = (stderr || '').trim()
+    if (!out && !err) return '(command finished with no output)'
+    return [out && `stdout:\n${out}`, err && `stderr:\n${err}`].filter(Boolean).join('\n\n')
+  } catch (e) {
+    const err = e as { message: string; stdout?: string; stderr?: string; code?: number; killed?: boolean }
+    if (err.killed) return `Command timed out after ${SHELL_TIMEOUT_MS / 1000}s.`
+    const tail = [err.stdout && `stdout:\n${err.stdout.toString().trim()}`, err.stderr && `stderr:\n${err.stderr.toString().trim()}`].filter(Boolean).join('\n\n')
+    return `Command failed (exit ${err.code ?? '?'}): ${err.message}${tail ? '\n' + tail : ''}`
+  }
+}
+
+function readClipboardText(): string {
+  const text = clipboard.readText()
+  if (!text) return '(clipboard is empty)'
+  return text
+}
+
+function writeClipboardText(text: string): string {
+  clipboard.writeText(text)
+  return `Copied ${text.length} characters to clipboard.`
+}
+
+async function captureScreenshot(): Promise<string> {
+  try {
+    const orbWin = BrowserWindow.getAllWindows()[0]
+    const display = screen.getPrimaryDisplay()
+    const { width, height } = display.size
+    const sources = await desktopCapturer.getSources({
+      types: ['screen'],
+      thumbnailSize: { width: Math.min(1920, width), height: Math.min(1080, height) },
+    })
+    const primary = sources[0]
+    if (!primary) return 'No screen source available.'
+
+    // Save to user's downloads folder for follow-up actions
+    const fs = await import('fs/promises')
+    const dest = join(app.getPath('downloads'), `jarviz-screenshot-${Date.now()}.png`)
+    const png = primary.thumbnail.toPNG()
+    await fs.writeFile(dest, png)
+
+    const dim = primary.thumbnail.getSize()
+    void orbWin
+    return `Captured screen "${primary.name}" (${dim.width}×${dim.height}). Saved to: ${dest}`
+  } catch (e) {
+    return `Screenshot failed: ${(e as Error).message}`
+  }
+}
+
+function showNotification(title: string, body: string): string {
+  if (!Notification.isSupported()) return 'Native notifications not supported on this system.'
+  new Notification({ title: title || 'Jarviz', body: body || '' }).show()
+  return `Notified: ${title}`
+}
+
+function getSystemInfo(): string {
+  const cpuList = cpus()
+  const cpuName = cpuList[0]?.model ?? 'unknown'
+  const memGB = (totalmem() / 1024 ** 3).toFixed(1)
+  const freeGB = (freemem() / 1024 ** 3).toFixed(1)
+  const u = userInfo()
+  return [
+    `OS: ${platform()} ${release()} (${arch()})`,
+    `Host: ${hostname()}`,
+    `User: ${u.username} (home: ${homedir()})`,
+    `CPU: ${cpuName} (${cpuList.length} cores)`,
+    `Memory: ${freeGB} GB free / ${memGB} GB total`,
+  ].join('\n')
 }
