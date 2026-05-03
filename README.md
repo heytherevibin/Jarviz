@@ -27,6 +27,23 @@ The orb appears in the bottom-center of your primary display. **Fully functional
 | Resize                | scroll wheel · `+` / `-` / `0`            |
 | Move                  | drag (snaps to screen edges)              |
 
+## Where to find Settings
+
+**Three ways** — pick whichever fits your flow:
+
+1. **⚙ gear button** at the top-right corner of the orb window (always visible).
+2. **Hotkey** `Cmd + ,` (macOS) or `Ctrl + ,` (Win/Linux) — works from anywhere.
+3. **Menu bar / tray icon**:
+   - macOS: top menu bar `Jarviz → Settings…` *or* tray icon → "Settings…"
+   - Windows / Linux: tray icon → "Settings…" (same menu also has Transcripts and Mini mode).
+
+## What's new (v0.4 — Instant speech & Futuristic HUD)
+
+- **🗣️ Instant streaming speech** — Jarviz starts speaking the first sentence within ~0.5–1s of finishing the reply, not after the full TTS render. Sentence-pipelined: each sentence is synthesised in parallel and queued for ordered playback.
+- **🎨 Futuristic redesign** — all the rings circling the orb are gone. New HUD: audio-reactive vertical scan beam, quadrant reticle pips that orbit, sparse perimeter tick marks, soft halo. Plus four floating sci-fi corner widgets (J-CORE identity / live telemetry / signal bars / audio meter) — JARVIS cockpit feel.
+- **🎙️ Default voice = Aoede** (soft female, breezy). Voice picker reorganized with female voices first.
+- **⚙ Always-visible Settings button** at top-right — no more hunting.
+
 ## What's new (v0.3 — Voice & Visual)
 
 - **🎙️ Gemini voices** — premium prebuilt voices via Google AI Studio: Charon (calm), Kore (firm), Puck (upbeat), Algieba, Aoede, Enceladus, Orus, Despina, Iapetus, Achernar, Sulafat, Vindemiatrix. Set `GEMINI_API_KEY` (free) and pick a voice in Settings. Falls back to ElevenLabs → browser if not configured.

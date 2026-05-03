@@ -10,6 +10,7 @@ import { JarvizFSM, JarvizState } from './state/JarvizFSM'
 import { SettingsOverlay } from './SettingsOverlay'
 import { TranscriptOverlay } from './TranscriptOverlay'
 import { HUDLayer } from './HUDLayer'
+import { OrbHUDWidgets } from './OrbHUDWidgets'
 
 declare global {
   interface Window {
@@ -46,9 +47,10 @@ declare global {
         newSession: () => Promise<boolean>
       }
       agent: {
-        query:   (text: string) => Promise<{ text: string; audio: number[] | null; audioMime: string | null }>
+        query:   (text: string) => Promise<{ text: string; audio: number[] | null; audioMime: string | null; streaming?: boolean }>
         cancel:  () => void
         onState: (cb: (state: string) => void) => () => void
+        onSpeakChunk: (cb: (chunk: { index: number; total: number; text: string; audio: number[] | null; audioMime: string | null; isFinal: boolean }) => void) => () => void
       }
     }
   }
@@ -357,6 +359,64 @@ function playAudioReactive(
   return { stop: cleanup }
 }
 
+// ── Streaming chunk-queue player ─────────────────────────────────────────────
+// Manages a queue of speech chunks arriving over IPC. Plays them in order,
+// driving the orb amplitude live for each chunk. Falls back to Web Speech for
+// chunks that have no audio bytes attached.
+class StreamingPlayer {
+  private queue: Array<{ text: string; audio: number[] | null; mime: string | null; isFinal: boolean }> = []
+  private playing  = false
+  private stopped  = false
+  private current: { stop: () => void } | null = null
+  private webSpeechCleanup: (() => void) | null = null
+  private finalEnqueued = false
+
+  constructor(
+    private setAmp:  (v: number) => void,
+    private onAllDone: () => void,
+  ) {}
+
+  enqueue(chunk: { text: string; audio: number[] | null; audioMime: string | null; isFinal: boolean }): void {
+    if (this.stopped) return
+    if (chunk.isFinal) this.finalEnqueued = true
+    this.queue.push({ text: chunk.text, audio: chunk.audio, mime: chunk.audioMime, isFinal: chunk.isFinal })
+    if (!this.playing) this.playNext()
+  }
+
+  private playNext(): void {
+    if (this.stopped) return
+    const next = this.queue.shift()
+    if (!next) {
+      this.playing = false
+      // If the final chunk has been enqueued AND drained, we're done
+      if (this.finalEnqueued) {
+        this.setAmp(0)
+        this.onAllDone()
+      }
+      return
+    }
+    this.playing = true
+    const onChunkEnd = (): void => { this.current = null; this.playNext() }
+
+    if (next.audio && next.audio.length > 0) {
+      this.current = playAudioReactive(next.audio, next.mime || 'audio/mpeg', this.setAmp, onChunkEnd)
+    } else {
+      // No audio bytes — fall back to browser speech for this chunk so the user still hears it
+      const env = startSpeechEnvelope(this.setAmp)
+      this.webSpeechCleanup = () => { env(); stopLocalSpeech() }
+      speakLocal(next.text, () => { env(); this.webSpeechCleanup = null; onChunkEnd() })
+    }
+  }
+
+  stop(): void {
+    this.stopped = true
+    this.queue = []
+    if (this.current) { this.current.stop(); this.current = null }
+    if (this.webSpeechCleanup) { this.webSpeechCleanup(); this.webSpeechCleanup = null }
+    this.setAmp(0)
+  }
+}
+
 // ── Web Speech TTS amplitude envelope ────────────────────────────────────────
 function startSpeechEnvelope(setAmp: (v: number) => void): () => void {
   let raf = 0
@@ -394,6 +454,13 @@ export default function App() {
   const [hudState, setHudState] = useState<JarvizState>('idle')
   const [hudAmp, setHudAmp]   = useState(0)
   const [shellSize, setShellSize] = useState({ w: 360, h: 360 })
+  const [bootTs] = useState(() => Date.now())
+  const [uptime, setUptime] = useState(0)
+
+  useEffect(() => {
+    const id = setInterval(() => setUptime(Date.now() - bootTs), 500)
+    return () => clearInterval(id)
+  }, [bootTs])
 
   const setOrbAmp = useCallback((v: number) => {
     sceneRef.current?.setAudioAmplitude(v)
@@ -475,15 +542,32 @@ export default function App() {
     }
   }, [])
 
+  const streamingPlayerRef = useRef<StreamingPlayer | null>(null)
+
   const handleSpeaking = useCallback((fsm: JarvizFSM) => {
     const { replyText, replyAudio, replyAudioMime } = fsm.context
 
     const onDone = () => {
       stopPlaybackRef.current = null
+      streamingPlayerRef.current = null
       rlog('[Speaking] done — entering follow-up')
       fsm.send({ type: 'SPEECH_DONE' })
     }
 
+    // Streaming path: chunks arrive over IPC via onSpeakChunk listener
+    if (replyAudio === null && replyText) {
+      const player = new StreamingPlayer(setOrbAmp, onDone)
+      streamingPlayerRef.current = player
+      stopPlaybackRef.current = () => {
+        player.stop()
+        streamingPlayerRef.current = null
+        onDone()
+      }
+      // No-op here — chunks will be enqueued by the IPC listener as they arrive
+      return
+    }
+
+    // Legacy single-buffer path (kept for safety / non-streaming responses)
     if (replyAudio && replyAudio.length > 0) {
       const handle = playAudioReactive(replyAudio, replyAudioMime || 'audio/mpeg', setOrbAmp, onDone)
       stopPlaybackRef.current = handle.stop
@@ -703,6 +787,16 @@ export default function App() {
       if (s.state === 'available' || s.state === 'ready') rlog(`[Updater] ${s.state}`)
     })
 
+    const removeSpeakChunk = window.jarviz?.agent?.onSpeakChunk((chunk) => {
+      const player = streamingPlayerRef.current
+      if (!player) {
+        rlog(`[Stream] chunk arrived with no active player — ignoring (i=${chunk.index})`)
+        return
+      }
+      rlog(`[Stream] chunk ${chunk.index + 1}/${chunk.total} (audio=${chunk.audio?.length ?? 0}B, final=${chunk.isFinal})`)
+      player.enqueue(chunk)
+    })
+
     const removeAgentState = window.jarviz?.agent?.onState(s => {
       if (s === 'searching' || s === 'thinking') {
         scene.setState(s as OrbState)
@@ -747,6 +841,7 @@ export default function App() {
       removeOpenSettings?.()
       removeOpenTranscripts?.()
       removeUpdaterStatus?.()
+      removeSpeakChunk?.()
       removeAgentState?.()
       obs.disconnect()
     }
@@ -875,6 +970,48 @@ export default function App() {
         size={Math.min(shellSize.w, shellSize.h)}
         amp={hudAmp}
       />
+      <OrbHUDWidgets state={hudState} amp={hudAmp} uptime={uptime} />
+
+      {/* Settings gear button — always visible at top-right so user can find it */}
+      <button
+        type="button"
+        data-testid="settings-gear-button"
+        title="Settings  (Cmd/Ctrl+,)"
+        onClick={(e) => { e.stopPropagation(); setSettingsOpen(true) }}
+        onMouseDown={(e) => e.stopPropagation()}
+        style={{
+          position:    'fixed',
+          top:         12,
+          right:       12,
+          zIndex:      30,
+          width:       28, height: 28,
+          borderRadius: 14,
+          background:  'rgba(8,10,18,0.65)',
+          border:      '1px solid rgba(255,255,255,0.18)',
+          backdropFilter: 'blur(12px)',
+          WebkitBackdropFilter: 'blur(12px)',
+          cursor:      'pointer',
+          display:     'flex',
+          alignItems:  'center',
+          justifyContent: 'center',
+          color:       'rgba(255,255,255,0.85)',
+          padding:     0,
+          transition:  'background 0.2s, color 0.2s, border-color 0.2s',
+        }}
+        onMouseEnter={(e) => {
+          (e.currentTarget as HTMLButtonElement).style.background = 'rgba(120,80,220,0.30)'
+          ;(e.currentTarget as HTMLButtonElement).style.borderColor = 'rgba(160,120,255,0.50)'
+        }}
+        onMouseLeave={(e) => {
+          (e.currentTarget as HTMLButtonElement).style.background = 'rgba(8,10,18,0.65)'
+          ;(e.currentTarget as HTMLButtonElement).style.borderColor = 'rgba(255,255,255,0.18)'
+        }}
+      >
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <circle cx="12" cy="12" r="3" />
+          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
+        </svg>
+      </button>
       <div
         style={hudWrapStyle}
         aria-live="polite"

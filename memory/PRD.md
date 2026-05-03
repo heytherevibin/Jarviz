@@ -12,6 +12,22 @@
 
 ## What's Been Implemented (2026-01-21)
 
+### Iteration 4 — Instant speech + Futuristic HUD redesign + Settings discoverability
+- **Streaming sentence-pipelined TTS** (`src/main/agent/streaming.ts`) — splits replies into sentence-shaped chunks (with abbreviation guards + soft 220-char cap), synthesises all chunks **in parallel**, emits in order over new `agent:speakChunk` IPC. Renderer's new `StreamingPlayer` queues chunks and plays them sequentially with smooth amplitude-driven orb modulation. First sentence is heard within ~0.5–1s instead of waiting 3–6s for full reply.
+- **Default voice changed to Aoede** — soft female, breezy. Voice picker reordered with all soft-female voices grouped at the top (Aoede / Vindemiatrix / Despina / Sulafat / Achernar) and Charon/Iapetus marked male for clarity.
+- **Removed orbital ring layer entirely** (3D TorusGeometry rings deleted) and stripped concentric outer/inner rings + 4 corner brackets from the SVG HUD per user direction. Orb now sits in clean negative space.
+- **New futuristic HUD elements**:
+  - Audio-reactive vertical scan beam that sweeps across the orb during listen/think/speak states.
+  - 4 quadrant reticle pips that orbit at variable speeds per FSM state (idle 0.10°/frame → thinking 0.55°/frame).
+  - Sparse 36-position tick marks (only majors + half-majors drawn).
+  - Soft state-colored radial halo + ephemeral audio-reactive scan ring.
+- **OrbHUDWidgets** component — 4 floating sci-fi data widgets at screen corners (no rings around the orb):
+  - Top-left: J-CORE 7.3 identity strip with running uptime + state badge ("STANDBY" / "LIVE-IN" / "COMPUTE" / "OUTBOUND").
+  - Top-right: live mock telemetry (CPU / MEM / NET %) with smooth random-walk animation.
+  - Bottom-left: NODE id + 4-bar signal indicator.
+  - Bottom-right: live audio level meter (12-bar) + status code.
+- **Always-visible Settings gear button** at top-right of orb window (28px circular, glassmorphic, hover-glow). Solves "where do I find Settings?" — always discoverable. Existing Cmd+, hotkey, tray menu, and macOS application menu (Jarviz → Settings) all preserved.
+
 ### Iteration 3 — Gemini voices + Premium orb HUD
 - **Gemini TTS** integration. New `synthesize()` returns `{buffer, mime}` and supports 3-tier preference: Gemini (when `GEMINI_API_KEY` + `GEMINI_TTS_VOICE` set) → ElevenLabs → browser. Calls `gemini-2.5-flash-preview-tts` directly (proxy doesn't support TTS yet); wraps PCM L16 24kHz output in a manual RIFF/WAVE header so the renderer Audio element plays it natively. Renderer now picks `audio/wav` vs `audio/mpeg` via the `audioMime` field threaded through IPC + FSM.
 - **Voice picker UI** in Settings — 12 curated Gemini voices with trait descriptions; "Off" option skips Gemini. `store-env.ts` upgraded with managed-key list so unsetting a voice clears `process.env`.

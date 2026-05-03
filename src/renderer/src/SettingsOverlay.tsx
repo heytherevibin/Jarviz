@@ -13,19 +13,21 @@ const ENV_KEYS = [
 ] as const
 
 const GEMINI_VOICES = [
-  { id: '',            label: 'Off — use ElevenLabs / browser voice' },
-  { id: 'Charon',      label: 'Charon — calm, neutral (recommended)' },
-  { id: 'Kore',        label: 'Kore — firm, professional' },
-  { id: 'Puck',        label: 'Puck — upbeat, friendly' },
-  { id: 'Algieba',     label: 'Algieba — smooth, warm' },
-  { id: 'Aoede',       label: 'Aoede — breezy, light' },
+  // Soft female voices (recommended)
+  { id: 'Aoede',       label: 'Aoede — soft female, breezy (default)' },
+  { id: 'Vindemiatrix',label: 'Vindemiatrix — gentle female, refined' },
+  { id: 'Despina',     label: 'Despina — smooth female, even' },
+  { id: 'Sulafat',     label: 'Sulafat — rich female, resonant' },
+  { id: 'Achernar',    label: 'Achernar — bright female, sharp' },
+  // Other options
   { id: 'Enceladus',   label: 'Enceladus — breathy, soft' },
-  { id: 'Orus',        label: 'Orus — firm, decisive' },
-  { id: 'Despina',     label: 'Despina — smooth, even' },
-  { id: 'Iapetus',     label: 'Iapetus — clear, articulate' },
-  { id: 'Achernar',    label: 'Achernar — bright, sharp' },
-  { id: 'Sulafat',     label: 'Sulafat — rich, resonant' },
-  { id: 'Vindemiatrix',label: 'Vindemiatrix — gentle, refined' },
+  { id: 'Algieba',     label: 'Algieba — smooth, warm' },
+  { id: 'Iapetus',     label: 'Iapetus — clear male, articulate' },
+  { id: 'Charon',      label: 'Charon — calm male, neutral (JARVIS-like)' },
+  { id: 'Kore',        label: 'Kore — firm female, professional' },
+  { id: 'Puck',        label: 'Puck — upbeat, friendly' },
+  { id: 'Orus',        label: 'Orus — firm male, decisive' },
+  { id: '',            label: '— Off — use ElevenLabs / browser voice' },
 ]
 
 const ENV_KEY_HINTS: Record<string, string> = {
@@ -70,7 +72,7 @@ export function SettingsOverlay({ open, onClose }: Props) {
   const [emergentProvider, setEmergentProvider] = useState('anthropic')
   const [emergentModel, setEmergentModel] = useState('claude-sonnet-4-5-20250929')
   const [whisperModel, setWhisperModel] = useState('base')
-  const [geminiVoice, setGeminiVoice] = useState('')
+  const [geminiVoice, setGeminiVoice] = useState('Aoede')
   const [keys, setKeys] = useState<Record<string, string>>({})
   const [saved, setSaved] = useState(false)
   const [miniMode, setMiniMode] = useState(false)
@@ -86,7 +88,7 @@ export function SettingsOverlay({ open, onClose }: Props) {
       setKeys({ ...s.envOverrides })
       setEmergentProvider(s.envOverrides.EMERGENT_PROVIDER || 'anthropic')
       setEmergentModel(s.envOverrides.EMERGENT_MODEL || 'claude-sonnet-4-5-20250929')
-      setGeminiVoice(s.envOverrides.GEMINI_TTS_VOICE || '')
+      setGeminiVoice(s.envOverrides.GEMINI_TTS_VOICE ?? 'Aoede')
       setMiniMode(!!mini)
       setSaved(false)
     }).catch(console.error)

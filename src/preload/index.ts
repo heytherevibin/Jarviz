@@ -89,7 +89,7 @@ const jarviz = {
   },
 
   agent: {
-    query: (text: string): Promise<{ text: string; audio: number[] | null; audioMime: string | null }> =>
+    query: (text: string): Promise<{ text: string; audio: number[] | null; audioMime: string | null; streaming?: boolean }> =>
       invokeWithTimeout('agent:query', { text }),
 
     cancel: () => ipcRenderer.send('agent:cancel'),
@@ -98,6 +98,12 @@ const jarviz = {
       const handler = (_: Electron.IpcRendererEvent, { state }: { state: string }): void => cb(state)
       ipcRenderer.on('agent:state', handler)
       return () => ipcRenderer.removeListener('agent:state', handler)
+    },
+
+    onSpeakChunk: (cb: (chunk: { index: number; total: number; text: string; audio: number[] | null; audioMime: string | null; isFinal: boolean }) => void) => {
+      const handler = (_: Electron.IpcRendererEvent, chunk: { index: number; total: number; text: string; audio: number[] | null; audioMime: string | null; isFinal: boolean }): void => cb(chunk)
+      ipcRenderer.on('agent:speakChunk', handler)
+      return () => ipcRenderer.removeListener('agent:speakChunk', handler)
     },
   },
 }

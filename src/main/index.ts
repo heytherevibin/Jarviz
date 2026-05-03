@@ -6,7 +6,7 @@ config({ path: join(__dirname, '../../.env'), override: true })
 import { app, BrowserWindow, screen, ipcMain, globalShortcut, Tray, Menu, nativeImage } from 'electron'
 import Store from 'electron-store'
 import { runAgent } from './agent/claude'
-import { synthesize } from './agent/tts'
+import { streamSpeak, type SpeechChunk } from './agent/streaming'
 import { mergeStoredEnv } from './store-env'
 import { TranscriptStore } from './agent/transcript'
 import { setupAutoUpdater, quitAndInstallUpdate } from './updater'
@@ -260,11 +260,19 @@ function registerMainProcessHandlers(): void {
       transcripts.append(text, reply)
 
       sendState('speaking')
-      const audio = await synthesize(reply)
+
+      // Sentence-pipelined TTS — emit each chunk as soon as its audio is ready
+      // so the renderer can start speaking the first sentence within ~0.5-1s
+      // instead of waiting 3-6s for the full reply to synthesize.
+      streamSpeak(reply, (chunk: SpeechChunk) => {
+        event.sender.send('agent:speakChunk', chunk)
+      }).catch(err => console.error('[Agent] streamSpeak error:', err))
+
       return {
         text:      reply,
-        audio:     audio ? Array.from(audio.buffer) : null,
-        audioMime: audio?.mime ?? null,
+        audio:     null,    // legacy field retained for type-compat; chunks ride on agent:speakChunk
+        audioMime: null,
+        streaming: true,
       }
     } catch (err) {
       const raw = (err as Error)?.message ?? String(err)
