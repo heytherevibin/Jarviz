@@ -27,6 +27,12 @@ The orb appears in the bottom-center of your primary display. **Fully functional
 | Resize                | scroll wheel · `+` / `-` / `0`            |
 | Move                  | drag (snaps to screen edges)              |
 
+## What's new (v0.3 — Voice & Visual)
+
+- **🎙️ Gemini voices** — premium prebuilt voices via Google AI Studio: Charon (calm), Kore (firm), Puck (upbeat), Algieba, Aoede, Enceladus, Orus, Despina, Iapetus, Achernar, Sulafat, Vindemiatrix. Set `GEMINI_API_KEY` (free) and pick a voice in Settings. Falls back to ElevenLabs → browser if not configured.
+- **✨ Premium HUD orb** — three holographic 3D orbital rings (TorusGeometry + custom dashed shader) at orthogonal orientations slowly counter-rotating, plus a full SVG HUD layer with: outer rotating segmented arc, inner counter-rotating arc, 60-tick rim ring with 12 majors, 4 quadrant reticle pips that spin with state, audio-reactive scan ring, corner brackets — all color-locked to the state palette.
+- **🪟 Glass HUD card** — refreshed with gradient glassmorphism, state-color status dot with bloom, "JARVIZ" tabular monogram, semantic colored labels for "You" / "Jarviz".
+
 ## What's new (v0.2)
 
 - **👁️ Multimodal vision** — `see_screen` tool now sends actual screen pixels to the LLM. Ask "what's on my screen?" and Claude/GPT/Gemini can read it.

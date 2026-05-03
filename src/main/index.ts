@@ -260,8 +260,12 @@ function registerMainProcessHandlers(): void {
       transcripts.append(text, reply)
 
       sendState('speaking')
-      const audioBuffer = await synthesize(reply)
-      return { text: reply, audio: audioBuffer ? Array.from(audioBuffer) : null }
+      const audio = await synthesize(reply)
+      return {
+        text:      reply,
+        audio:     audio ? Array.from(audio.buffer) : null,
+        audioMime: audio?.mime ?? null,
+      }
     } catch (err) {
       const raw = (err as Error)?.message ?? String(err)
       console.error('[Agent] error:', raw)

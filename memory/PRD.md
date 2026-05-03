@@ -12,6 +12,13 @@
 
 ## What's Been Implemented (2026-01-21)
 
+### Iteration 3 — Gemini voices + Premium orb HUD
+- **Gemini TTS** integration. New `synthesize()` returns `{buffer, mime}` and supports 3-tier preference: Gemini (when `GEMINI_API_KEY` + `GEMINI_TTS_VOICE` set) → ElevenLabs → browser. Calls `gemini-2.5-flash-preview-tts` directly (proxy doesn't support TTS yet); wraps PCM L16 24kHz output in a manual RIFF/WAVE header so the renderer Audio element plays it natively. Renderer now picks `audio/wav` vs `audio/mpeg` via the `audioMime` field threaded through IPC + FSM.
+- **Voice picker UI** in Settings — 12 curated Gemini voices with trait descriptions; "Off" option skips Gemini. `store-env.ts` upgraded with managed-key list so unsetting a voice clears `process.env`.
+- **OrbitalRings** module — three TorusGeometry rings (radii 1.35/1.55/1.75 at orthogonal Euler orientations) with a custom dashed-segment shader (per-ring dash frequency, gap, time, pulse uniforms). Color-locked to orb's rim color, additive blending, audio-reactive intensity, per-state opacity multiplier. Wired into OrbScene tick + dispose lifecycle.
+- **HUDLayer** SVG overlay — outer segmented rotating arc (gradient stroke), inner counter-rotating dashed ring, 60 tick marks (12 majors), 4 quadrant reticle pips that spin slowly, audio-reactive scan ring, four corner brackets, soft state-colored radial halo. Rotation speed varies per FSM state (idle 0.06°/frame → thinking 0.40°/frame). Color accent maps to JarvizState.
+- **Refreshed HUD card** — glassmorphism (18px backdrop blur + 140% saturation), gradient bg, state-color bloom dot, JARVIZ monogram, semantic colored "You"/"Jarviz" labels.
+
 ### Iteration 1 — Foundation
 - Yarn install + electron-vite build clean; main-process TypeScript typechecks pass.
 - New **Emergent Universal LLM Key** backend using OpenAI SDK against `https://integrations.emergentagent.com/llm`. Verified live with Claude Sonnet 4.5, GPT-5.2 and Gemini 3 Pro Preview, including tool calling.

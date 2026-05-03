@@ -12,6 +12,22 @@ const ENV_KEYS = [
   'PICOVOICE_ACCESS_KEY',
 ] as const
 
+const GEMINI_VOICES = [
+  { id: '',            label: 'Off — use ElevenLabs / browser voice' },
+  { id: 'Charon',      label: 'Charon — calm, neutral (recommended)' },
+  { id: 'Kore',        label: 'Kore — firm, professional' },
+  { id: 'Puck',        label: 'Puck — upbeat, friendly' },
+  { id: 'Algieba',     label: 'Algieba — smooth, warm' },
+  { id: 'Aoede',       label: 'Aoede — breezy, light' },
+  { id: 'Enceladus',   label: 'Enceladus — breathy, soft' },
+  { id: 'Orus',        label: 'Orus — firm, decisive' },
+  { id: 'Despina',     label: 'Despina — smooth, even' },
+  { id: 'Iapetus',     label: 'Iapetus — clear, articulate' },
+  { id: 'Achernar',    label: 'Achernar — bright, sharp' },
+  { id: 'Sulafat',     label: 'Sulafat — rich, resonant' },
+  { id: 'Vindemiatrix',label: 'Vindemiatrix — gentle, refined' },
+]
+
 const ENV_KEY_HINTS: Record<string, string> = {
   EMERGENT_LLM_KEY:    'Universal key (sk-emergent-…) — proxies Claude / GPT / Gemini.',
   ANTHROPIC_API_KEY:   'Direct Anthropic key (console.anthropic.com).',
@@ -54,6 +70,7 @@ export function SettingsOverlay({ open, onClose }: Props) {
   const [emergentProvider, setEmergentProvider] = useState('anthropic')
   const [emergentModel, setEmergentModel] = useState('claude-sonnet-4-5-20250929')
   const [whisperModel, setWhisperModel] = useState('base')
+  const [geminiVoice, setGeminiVoice] = useState('')
   const [keys, setKeys] = useState<Record<string, string>>({})
   const [saved, setSaved] = useState(false)
   const [miniMode, setMiniMode] = useState(false)
@@ -69,6 +86,7 @@ export function SettingsOverlay({ open, onClose }: Props) {
       setKeys({ ...s.envOverrides })
       setEmergentProvider(s.envOverrides.EMERGENT_PROVIDER || 'anthropic')
       setEmergentModel(s.envOverrides.EMERGENT_MODEL || 'claude-sonnet-4-5-20250929')
+      setGeminiVoice(s.envOverrides.GEMINI_TTS_VOICE || '')
       setMiniMode(!!mini)
       setSaved(false)
     }).catch(console.error)
@@ -83,7 +101,12 @@ export function SettingsOverlay({ open, onClose }: Props) {
   }, [emergentProvider, emergentModel])
 
   const save = (): void => {
-    const next = { ...keys, EMERGENT_PROVIDER: emergentProvider, EMERGENT_MODEL: emergentModel }
+    const next = {
+      ...keys,
+      EMERGENT_PROVIDER: emergentProvider,
+      EMERGENT_MODEL:    emergentModel,
+      GEMINI_TTS_VOICE:  geminiVoice,
+    }
     window.jarviz.settings.set({
       llmBackend,
       whisperModel,
@@ -227,6 +250,22 @@ export function SettingsOverlay({ open, onClose }: Props) {
           <option value="medium">medium  · ~1.5 GB · high accuracy</option>
           <option value="large-v3">large-v3  · ~3 GB · best accuracy</option>
         </select>
+
+        <SectionLabel>Voice (TTS)</SectionLabel>
+        <select
+          data-testid="settings-gemini-voice"
+          value={geminiVoice}
+          onChange={e => setGeminiVoice(e.target.value)}
+          style={selectStyle}
+        >
+          {GEMINI_VOICES.map(v => (
+            <option key={v.id} value={v.id}>{v.label}</option>
+          ))}
+        </select>
+        <div style={hintStyle}>
+          Gemini voices need a free <strong>GEMINI_API_KEY</strong> from aistudio.google.com (paste it below).
+          Voice priority: Gemini → ElevenLabs → browser. Pick "Off" to skip Gemini.
+        </div>
 
         <SectionLabel>Display</SectionLabel>
         <button

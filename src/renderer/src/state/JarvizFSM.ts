@@ -16,7 +16,7 @@ export type JarvizEvent =
   | { type: 'TRANSCRIPT_READY'; text: string }
   | { type: 'NOISE_DETECTED' }
   | { type: 'STT_FAILED' }
-  | { type: 'RESPONSE_READY'; text: string; audio: number[] | null }
+  | { type: 'RESPONSE_READY'; text: string; audio: number[] | null; audioMime?: string | null }
   | { type: 'AGENT_FAILED'; message: string }
   | { type: 'SPEECH_DONE' }
   | { type: 'INTERRUPTED' }
@@ -32,6 +32,7 @@ export interface FSMContext {
   transcript: string
   replyText: string
   replyAudio: number[] | null
+  replyAudioMime: string | null
   wakeCommand: string
   errorMessage: string
   turnCount: number
@@ -98,6 +99,7 @@ export class JarvizFSM {
     transcript: '',
     replyText: '',
     replyAudio: null,
+    replyAudioMime: null,
     wakeCommand: '',
     errorMessage: '',
     turnCount: 0,
@@ -172,6 +174,7 @@ export class JarvizFSM {
       case 'RESPONSE_READY':
         this._ctx.replyText = event.text
         this._ctx.replyAudio = event.audio
+        this._ctx.replyAudioMime = event.audioMime ?? null
         break
       case 'AGENT_FAILED':
         this._ctx.errorMessage = event.message

@@ -9,6 +9,7 @@ import { speakLocal, stopLocalSpeech, isSpeakingLocal } from './voice/LocalTTS'
 import { JarvizFSM, JarvizState } from './state/JarvizFSM'
 import { SettingsOverlay } from './SettingsOverlay'
 import { TranscriptOverlay } from './TranscriptOverlay'
+import { HUDLayer } from './HUDLayer'
 
 declare global {
   interface Window {
@@ -45,7 +46,7 @@ declare global {
         newSession: () => Promise<boolean>
       }
       agent: {
-        query:   (text: string) => Promise<{ text: string; audio: number[] | null }>
+        query:   (text: string) => Promise<{ text: string; audio: number[] | null; audioMime: string | null }>
         cancel:  () => void
         onState: (cb: (state: string) => void) => () => void
       }
@@ -124,13 +125,13 @@ const canvasStyle: CSSProperties = {
 const hudWrapStyle: CSSProperties = {
   position: 'fixed',
   left: '50%',
-  bottom: 12,
+  bottom: 16,
   transform: 'translateX(-50%)',
   zIndex: 60,
-  maxWidth: 'min(400px, calc(100vw - 24px))',
+  maxWidth: 'min(440px, calc(100vw - 24px))',
   width: 'max-content',
   minWidth: 0,
-  maxHeight: 'min(124px, 36vh)',
+  maxHeight: 'min(140px, 38vh)',
   overflow: 'hidden',
   pointerEvents: 'none',
   boxSizing: 'border-box',
@@ -138,43 +139,81 @@ const hudWrapStyle: CSSProperties = {
 }
 
 const hudCardStyle: CSSProperties = {
-  maxWidth: 'min(400px, calc(100vw - 24px))',
+  maxWidth: 'min(440px, calc(100vw - 24px))',
   boxSizing: 'border-box',
-  padding: '8px 12px 10px',
-  borderRadius: 12,
-  border: '1px solid rgba(255,255,255,0.12)',
-  backgroundColor: 'rgba(8,10,18,0.92)',
-  boxShadow: '0 14px 40px rgba(0,0,0,0.6)',
-  fontFamily: 'system-ui, -apple-system, Segoe UI, sans-serif',
-  fontSize: 11,
-  lineHeight: 1.35,
-  color: 'rgba(255,255,255,0.96)',
+  padding: '10px 14px 12px',
+  borderRadius: 14,
+  border: '1px solid rgba(255,255,255,0.10)',
+  background: 'linear-gradient(165deg, rgba(14,18,28,0.88), rgba(8,10,18,0.94))',
+  backdropFilter: 'blur(18px) saturate(140%)',
+  WebkitBackdropFilter: 'blur(18px) saturate(140%)',
+  boxShadow: '0 18px 44px rgba(0,0,0,0.55), inset 0 1px 0 rgba(255,255,255,0.06)',
+  fontFamily: '"SF Pro Display", "Inter", system-ui, -apple-system, Segoe UI, sans-serif',
+  fontSize: 12,
+  lineHeight: 1.4,
+  color: 'rgba(240,242,248,0.97)',
   textAlign: 'left',
+  position: 'relative',
 }
+
+const hudPhaseRowStyle: CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: 8,
+  marginBottom: 6,
+}
+
+const hudDotStyle = (color: string): CSSProperties => ({
+  width: 7, height: 7, borderRadius: '50%',
+  background: color,
+  boxShadow: `0 0 8px ${color}, 0 0 14px ${color}77`,
+  flexShrink: 0,
+})
 
 const hudPhaseStyle: CSSProperties = {
   fontWeight: 700,
-  fontSize: 10,
-  letterSpacing: '0.08em',
+  fontSize: 9.5,
+  letterSpacing: '0.14em',
   textTransform: 'uppercase',
-  marginBottom: 4,
   fontVariantNumeric: 'tabular-nums',
   whiteSpace: 'nowrap',
   overflow: 'hidden',
   textOverflow: 'ellipsis',
+  color: 'rgba(255,255,255,0.92)',
+  flex: 1,
 }
 
 const hudRowStyle: CSSProperties = {
   whiteSpace: 'nowrap',
   overflow: 'hidden',
   textOverflow: 'ellipsis',
-  opacity: 0.9,
+  opacity: 0.93,
+  fontSize: 12.5,
+  fontWeight: 400,
+  letterSpacing: '0.005em',
 }
 
 const hudLabelStyle: CSSProperties = {
-  fontWeight: 600,
-  opacity: 0.7,
-  marginRight: 4,
+  fontWeight: 700,
+  fontSize: 9,
+  letterSpacing: '0.14em',
+  textTransform: 'uppercase',
+  marginRight: 8,
+  display: 'inline-block',
+  padding: '1px 6px',
+  borderRadius: 4,
+  verticalAlign: 'middle',
+  opacity: 0.85,
+}
+
+const STATE_DOT_COLOR: Record<JarvizState, string> = {
+  idle:         '#8AB4F8',
+  listening:    '#FF8A80',
+  transcribing: '#A8D8B9',
+  thinking:     '#D7AEFB',
+  speaking:     '#FBD688',
+  followUp:     '#8AB4F8',
+  error:        '#F28B82',
 }
 
 // ── Recording config per context ─────────────────────────────────────────────
@@ -259,9 +298,10 @@ function recordUntilSilence(opts: RecordOptions = {}): Promise<Blob | null> {
   })
 }
 
-// ── MP3 playback with live amplitude ─────────────────────────────────────────
+// ── MP3/WAV playback with live amplitude ─────────────────────────────────────
 function playAudioReactive(
   bytes: number[],
+  mime: string,
   setAmp: (v: number) => void,
   onEnd: () => void,
 ): { stop: () => void } {
@@ -283,7 +323,7 @@ function playAudioReactive(
   }
 
   try {
-    const blob = new Blob([new Uint8Array(bytes)], { type: 'audio/mpeg' })
+    const blob = new Blob([new Uint8Array(bytes)], { type: mime || 'audio/mpeg' })
     url = URL.createObjectURL(blob)
     el  = new Audio(url)
     el.crossOrigin = 'anonymous'
@@ -351,9 +391,13 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [transcriptsOpen, setTranscriptsOpen] = useState(false)
   const [updateBanner, setUpdateBanner] = useState<{ state: string; progress?: number; message?: string } | null>(null)
+  const [hudState, setHudState] = useState<JarvizState>('idle')
+  const [hudAmp, setHudAmp]   = useState(0)
+  const [shellSize, setShellSize] = useState({ w: 360, h: 360 })
 
   const setOrbAmp = useCallback((v: number) => {
     sceneRef.current?.setAudioAmplitude(v)
+    setHudAmp(prev => prev * 0.78 + v * 0.22)
   }, [])
 
   // Mic-driven idle amplitude (muted during speaking via FSM state check)
@@ -424,7 +468,7 @@ export default function App() {
       rlog(`[Agent] text="${result?.text?.slice(0, 80)}" audio=${!!result?.audio}`)
 
       const text = result?.text ?? 'I had trouble processing that. Please try again.'
-      fsm.send({ type: 'RESPONSE_READY', text, audio: result?.audio ?? null })
+      fsm.send({ type: 'RESPONSE_READY', text, audio: result?.audio ?? null, audioMime: result?.audioMime ?? null })
     } catch (e) {
       rlog(`[Agent] error: ${e}`)
       fsm.send({ type: 'AGENT_FAILED', message: String(e) })
@@ -432,7 +476,7 @@ export default function App() {
   }, [])
 
   const handleSpeaking = useCallback((fsm: JarvizFSM) => {
-    const { replyText, replyAudio } = fsm.context
+    const { replyText, replyAudio, replyAudioMime } = fsm.context
 
     const onDone = () => {
       stopPlaybackRef.current = null
@@ -441,7 +485,7 @@ export default function App() {
     }
 
     if (replyAudio && replyAudio.length > 0) {
-      const handle = playAudioReactive(replyAudio, setOrbAmp, onDone)
+      const handle = playAudioReactive(replyAudio, replyAudioMime || 'audio/mpeg', setOrbAmp, onDone)
       stopPlaybackRef.current = handle.stop
     } else {
       const stopEnvelope = startSpeechEnvelope(setOrbAmp)
@@ -484,6 +528,7 @@ export default function App() {
     fsm.subscribe((newState, oldState, event, ctx) => {
       rlog(`[FSM] ${oldState} → ${newState} (${event.type})`)
 
+      setHudState(newState)
       setCaption(prev => {
         const phase = PHASE_LABEL[newState] ?? newState
         let user = prev.user
@@ -749,6 +794,15 @@ export default function App() {
   }, [])
 
   useEffect(() => {
+    const onResize = (): void => {
+      setShellSize({ w: window.innerWidth, h: window.innerHeight })
+    }
+    onResize()
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [])
+
+  useEffect(() => {
     const onEsc = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return
       if (settingsOpen) {
@@ -816,6 +870,11 @@ export default function App() {
       onMouseLeave={() => { if (mouseDownPos.current) { window.jarviz?.dragEnd(); mouseDownPos.current = null } }}
     >
       <canvas ref={canvasRef} style={canvasStyle} />
+      <HUDLayer
+        state={hudState}
+        size={Math.min(shellSize.w, shellSize.h)}
+        amp={hudAmp}
+      />
       <div
         style={hudWrapStyle}
         aria-live="polite"
@@ -823,17 +882,34 @@ export default function App() {
         role="status"
       >
         <div style={hudCardStyle}>
-          <div style={hudPhaseStyle} title={caption.phase}>{caption.phase}</div>
+          <div style={hudPhaseRowStyle}>
+            <span data-testid="hud-state-dot" style={hudDotStyle(STATE_DOT_COLOR[hudState] ?? '#8AB4F8')} />
+            <span style={hudPhaseStyle} title={caption.phase}>{caption.phase}</span>
+            <span style={{
+              fontSize: 9, fontWeight: 600, opacity: 0.55, letterSpacing: '0.10em',
+              textTransform: 'uppercase', fontVariantNumeric: 'tabular-nums',
+            }}>
+              JARVIZ
+            </span>
+          </div>
           {caption.user ? (
             <div style={hudRowStyle} title={caption.user}>
-              <span style={hudLabelStyle}>You</span>
-              {caption.user}
+              <span style={{
+                ...hudLabelStyle,
+                color: '#8AB4F8',
+                background: 'rgba(138,180,248,0.10)',
+              }}>You</span>
+              <span style={{ verticalAlign: 'middle' }}>{caption.user}</span>
             </div>
           ) : null}
           {caption.reply ? (
             <div style={{ ...hudRowStyle, marginTop: caption.user ? 4 : 0 }} title={caption.reply}>
-              <span style={hudLabelStyle}>Jarviz</span>
-              {caption.reply}
+              <span style={{
+                ...hudLabelStyle,
+                color: '#FBBC04',
+                background: 'rgba(251,188,4,0.10)',
+              }}>Jarviz</span>
+              <span style={{ verticalAlign: 'middle' }}>{caption.reply}</span>
             </div>
           ) : null}
         </div>

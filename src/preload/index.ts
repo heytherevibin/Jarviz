@@ -89,7 +89,7 @@ const jarviz = {
   },
 
   agent: {
-    query: (text: string): Promise<{ text: string; audio: number[] | null }> =>
+    query: (text: string): Promise<{ text: string; audio: number[] | null; audioMime: string | null }> =>
       invokeWithTimeout('agent:query', { text }),
 
     cancel: () => ipcRenderer.send('agent:cancel'),

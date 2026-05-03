@@ -1,6 +1,7 @@
 import * as THREE from 'three'
 import { Spring, ColorSpring, Vec2Spring } from './Spring'
 import { ParticleField } from './ParticleField'
+import { OrbitalRings } from './OrbitalRings'
 import vertexShader   from './shaders/orb.vert?raw'
 import fragmentShader from './shaders/orb.frag?raw'
 
@@ -172,6 +173,7 @@ export class OrbScene {
   private glowMed:   THREE.Mesh
   private glowWide:  THREE.Mesh
   private particles: ParticleField
+  private rings:     OrbitalRings
   private uniforms:  Record<string, THREE.IUniform>
   private clock = new THREE.Clock()
   private rafId:     number = 0
@@ -290,6 +292,7 @@ export class OrbScene {
     this.orbGroup.add(this.glowWide, this.glowMed, this.glowTight)
 
     this.particles = new ParticleField(this.orbGroup)
+    this.rings     = new OrbitalRings(this.orbGroup, I.colorRim)
 
     this.orbGroup.add(this.orb)
 
@@ -356,6 +359,7 @@ export class OrbScene {
     ;(tMat.uniforms.uColor.value as THREE.Color).copy(rimCol)
     ;(mMat.uniforms.uColor.value as THREE.Color).copy(rimCol)
     ;(wMat.uniforms.uColor.value as THREE.Color).copy(colA)
+    this.rings.setColor(rimCol)
   }
 
   getState(): OrbState { return this.state }
@@ -398,6 +402,7 @@ export class OrbScene {
     this.renderer.domElement.removeEventListener('webglcontextlost', this.onContextLost, false)
 
     this.particles.dispose()
+    this.rings.dispose()
 
     const disposeMesh = (mesh: THREE.Mesh): void => {
       mesh.removeFromParent()
@@ -508,5 +513,16 @@ export class OrbScene {
     wMat.uniforms.uOpacity.value = wOp
 
     this.particles.tick(dt, elapsed)
+
+    // Orbital rings — intensify slightly during active states + on audio
+    const ringIntensity =
+      (this.state === 'idle' ? 0.55 :
+       this.state === 'listening' ? 1.10 :
+       this.state === 'thinking' ? 1.00 :
+       this.state === 'searching' ? 1.05 :
+       this.state === 'speaking'  ? 1.15 :
+       0.90) * (1.0 + audioReactive * 0.5)
+    this.rings.setIntensity(Math.min(ringIntensity, 1.5))
+    this.rings.tick(dt, elapsed, pulse, this.audioAmp)
   }
 }
