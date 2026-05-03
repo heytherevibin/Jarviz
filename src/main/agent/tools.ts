@@ -15,6 +15,7 @@ import { hostname, platform, arch, release, totalmem, freemem, cpus, userInfo, h
 import { app, BrowserWindow, clipboard, Notification, shell, desktopCapturer, screen } from 'electron'
 import type { Tool } from '@anthropic-ai/sdk/resources/messages'
 import { activityAppend, memorySearch, memoryUpsert } from './context'
+import { tryExecuteMcpTool } from './mcp-registry'
 
 const execAsync = promisify(exec)
 
@@ -23,6 +24,53 @@ const MAX_TOOL_OUTPUT = 2000
 const SHELL_TIMEOUT_MS = 15000
 const SHELL_MAX_BUFFER = 1024 * 256
 const TRANSIENT_CODES = new Set([429, 502, 503, 504])
+const PDF_MAX_BYTES = 25 * 1024 * 1024
+const PDF_MAX_CHARS = 80_000
+
+/** Commands that are never run, even with JARVIZ_ALLOW_DESTRUCTIVE_SHELL. */
+const SHELL_BLOCKED: RegExp[] = [
+  /\brm\s+-rf\s+\/(\s|$)/i,
+  /\bmkfs\./i,
+  /:\(\)\s*\{\s*:\|:&/i,
+  /\bdd\s+if=[^|]*of=\/dev\/[a-z]+/i,
+  />\s*\/dev\/(sd|nvme|disk|rdisk)\b/i,
+  /diskutil\s+erase/i,
+  /:\(\)\s*\{\s*:\|:&/i,
+]
+
+const SHELL_RESTRICTED: Array<{ rx: RegExp; hint: string }> = [
+  { rx: /\bsudo\b/i, hint: 'sudo' },
+  { rx: /\bsu\s+-/i, hint: 'su' },
+  { rx: /\brm\s+-rf\b/i, hint: 'recursive delete' },
+  { rx: /\bchmod\s+[-+]?[rwxXstug]*777/i, hint: 'chmod 777' },
+  { rx: /\bchown\s+/i, hint: 'chown' },
+  { rx: /curl([^|\n]*)\|\s*(ba)?sh\b/i, hint: 'curl|sh' },
+  { rx: /wget([^|\n]*)\|\s*(ba)?sh\b/i, hint: 'wget|sh' },
+  { rx: /\bcurl\b[^|\n]*\|\s*(?:sudo\s+)?(?:ba)?sh\b/i, hint: 'piped curl to shell' },
+  { rx: /powershell\s+-enc/i, hint: 'encoded PowerShell' },
+  { rx: /\bFormat-Volume\b/i, hint: 'Format-Volume' },
+  { rx: /\bInvoke-Expression\b/i, hint: 'Invoke-Expression' },
+  { rx: /\bnet\s+user\b/i, hint: 'net user' },
+  { rx: /\breg(\.exe)?\s+delete\b/i, hint: 'registry delete' },
+]
+
+function shellPolicy(cmd: string): { ok: true } | { ok: false; reason: string } {
+  const c = cmd.trim()
+  if (!c) return { ok: false, reason: 'empty command' }
+  if (SHELL_BLOCKED.some((rx) => rx.test(c))) {
+    return { ok: false, reason: 'This command pattern is blocked for safety (device or mass-delete risk).' }
+  }
+  if (process.env.JARVIZ_ALLOW_DESTRUCTIVE_SHELL === '1') return { ok: true }
+  for (const { rx, hint } of SHELL_RESTRICTED) {
+    if (rx.test(c)) {
+      return {
+        ok:      false,
+        reason:  `This command looks high-risk (${hint}). Enable “Allow destructive shell” under Privacy & system if you really want Jarviz to run it.`,
+      }
+    }
+  }
+  return { ok: true }
+}
 
 /** Structured tool result. Images are base64-encoded PNG bytes (no data: prefix). */
 export interface ToolResult {
@@ -193,6 +241,15 @@ export const TOOLS: Tool[] = [
     input_schema: {
       type: 'object' as const,
       properties: { path: { type: 'string', description: 'Absolute file path' } },
+      required: ['path'],
+    },
+  },
+  {
+    name: 'read_pdf',
+    description: 'Extract text from a PDF on disk (text layer). Use for voice Q&A about documents. For scan-only PDFs, use see_screen after the user opens the file. Max ~25 MB; first ~80 pages.',
+    input_schema: {
+      type: 'object' as const,
+      properties: { path: { type: 'string', description: 'Absolute path to a .pdf file' } },
       required: ['path'],
     },
   },
@@ -371,6 +428,7 @@ export async function executeTool(name: string, input: ToolInput): Promise<ToolR
       case 'calculate':        return text(calculate(String(input.expression ?? '')))
       case 'get_location':     return text(await getLocation())
       case 'read_file':        return text(await readFileContents(String(input.path ?? '')))
+      case 'read_pdf':         return text(await readPdfText(String(input.path ?? '')))
       case 'list_directory':   return text(await listDir(String(input.path ?? '')))
       case 'search_files':     return text(await searchFiles(String(input.directory ?? ''), String(input.pattern ?? '')))
       case 'open_url':         return text(await openUrl(String(input.url ?? '')))
@@ -395,7 +453,11 @@ export async function executeTool(name: string, input: ToolInput): Promise<ToolR
         tags: Array.isArray(input.tags) ? (input.tags as unknown[]).map(String) : [],
         projectRoot: input.projectRoot ? String(input.projectRoot) : undefined,
       }), null, 2))
-      default:                 return text(`Unknown tool: ${name}`)
+      default: {
+        const mcp = await tryExecuteMcpTool(name, input)
+        if (mcp) return text(mcp.text)
+        return text(`Unknown tool: ${name}`)
+      }
     }
   } catch (e) {
     return text(`Tool ${name} failed: ${(e as Error).message}`)
@@ -628,6 +690,35 @@ async function getLocation(): Promise<string> {
   return `${data.city}, ${data.region}, ${data.country_name} (${data.timezone})`
 }
 
+async function readPdfText(filePath: string): Promise<string> {
+  const ext = extname(filePath).toLowerCase()
+  if (ext !== '.pdf') return 'Not a PDF file (.pdf extension required).'
+  let info
+  try {
+    info = await stat(filePath)
+  } catch {
+    return 'Could not read PDF path.'
+  }
+  if (info.size > PDF_MAX_BYTES) return `PDF is too large (${Math.round(info.size / (1024 * 1024))} MB). Max ${PDF_MAX_BYTES / (1024 * 1024)} MB.`
+  const buf = await readFile(filePath)
+  const { PDFParse } = await import('pdf-parse')
+  const parser = new PDFParse({ data: buf })
+  try {
+    const tr = await parser.getText({ first: 80 })
+    await Promise.resolve(parser.destroy()).catch(() => {})
+    const raw = tr.text.replace(/[ \t]+\n/g, '\n').trim()
+    if (!raw) {
+      return 'No extractable text in this PDF (it may be image-only). Ask the user to open it on screen and use see_screen.'
+    }
+    return raw.length > PDF_MAX_CHARS
+      ? `${raw.slice(0, PDF_MAX_CHARS)}\n[...${raw.length - PDF_MAX_CHARS} characters omitted]`
+      : raw
+  } catch (e) {
+    await Promise.resolve(parser.destroy()).catch(() => {})
+    return `PDF parse failed: ${(e as Error).message}`
+  }
+}
+
 async function readFileContents(filePath: string): Promise<string> {
   const SAFE_EXTS = ['.txt', '.md', '.json', '.js', '.ts', '.tsx', '.jsx', '.py', '.sh', '.yaml', '.yml', '.toml', '.csv', '.html', '.css']
   const MAX_BYTES = 16_000
@@ -672,9 +763,19 @@ async function searchFiles(dir: string, pattern: string, depth = 4): Promise<str
 
 async function openUrl(url: string): Promise<string> {
   if (!url) return 'No URL given.'
-  let target = url.trim()
+  const raw = url.trim()
+  if (/^(javascript|vbscript|data|jar):/i.test(raw)) {
+    return 'Refused: unsafe URL scheme.'
+  }
+  if (/^data:/i.test(raw) && !/^data:image\//i.test(raw)) {
+    return 'Refused: non-image data URL.'
+  }
+  let target = raw
   if (!/^https?:\/\//i.test(target) && !/^mailto:|^file:/i.test(target)) {
     target = 'https://' + target
+  }
+  if (/^(javascript|vbscript|data|jar):/i.test(target)) {
+    return 'Refused: unsafe URL after normalization.'
   }
   await shell.openExternal(target)
   return `Opened ${target}`
@@ -719,10 +820,8 @@ async function openPath(p: string): Promise<string> {
 
 async function runCommand(command: string, cwd?: string): Promise<string> {
   if (!command) return 'No command given.'
-  const banned = [/\brm\s+-rf\s+\/(\s|$)/i, /\bmkfs\./i, /:\(\)\s*\{\s*:\|:&/i, /\bdd\s+if=.*of=\/dev\//i]
-  if (banned.some(rx => rx.test(command))) {
-    return `Refused: command appears destructive. Ask the user to run it manually if intended.`
-  }
+  const policy = shellPolicy(command)
+  if (!policy.ok) return `Refused: ${policy.reason}`
   try {
     const { stdout, stderr } = await execAsync(command, {
       timeout: SHELL_TIMEOUT_MS,

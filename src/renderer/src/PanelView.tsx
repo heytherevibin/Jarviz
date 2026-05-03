@@ -167,7 +167,7 @@ const NATIVE_GLASS_CHROME = {
   uiMode:        'glass' as const,
 } as const
 
-type PanelChrome = typeof POPOVER_CHROME
+type PanelChrome = typeof POPOVER_CHROME | typeof NATIVE_CHROME | typeof NATIVE_GLASS_CHROME
 
 const PanelChromeCtx = createContext<PanelChrome>(POPOVER_CHROME)
 function useCx(): PanelChrome {
@@ -195,33 +195,30 @@ function useFields(): { cx: PanelChrome; selectStyle: React.CSSProperties; input
   }), [cx])
 }
 
-type SettingsTabId = 'voice' | 'keys' | 'transcripts' | 'memory' | 'privacy'
+type SettingsTabId = 'general' | 'ai' | 'history' | 'about'
 
 type SettingsNavEntry = {
   id: SettingsTabId
   /** Sidebar row */
   label: string
-  /** Narrow menubar popover segment */
-  segmentLabel: string
-  paneTitle: string
-  paneSubtitle: string
+  /** Klack-style saturated tile behind the nav glyph */
+  iconBg: string
 }
 
 /** Grouped like System Settings: product areas, then app-specific surfaces */
 const SETTINGS_NAV_GROUPS: { section: string; items: SettingsNavEntry[] }[] = [
   {
-    section: 'Preferences',
+    section: 'Settings',
     items: [
-      { id: 'voice', label: 'Voice & speech', segmentLabel: 'Voice', paneTitle: 'Voice & speech', paneSubtitle: 'Gemini voices, preview, and spoken output quality.' },
-      { id: 'keys', label: 'Models & keys', segmentLabel: 'Models', paneTitle: 'Models & API keys', paneSubtitle: 'Session info, app behavior, LLM routing, Whisper, wake word, and API keys.' },
+      { id: 'general', label: 'General', iconBg: 'linear-gradient(180deg, #6b7280 0%, #4b5563 100%)' },
+      { id: 'ai', label: 'AI & Voice', iconBg: 'linear-gradient(180deg, #d946ef 0%, #9333ea 100%)' },
+      { id: 'history', label: 'History', iconBg: 'linear-gradient(180deg, #60a5fa 0%, #2563eb 100%)' },
     ],
   },
   {
     section: 'Jarviz',
     items: [
-      { id: 'transcripts', label: 'Transcripts', segmentLabel: 'History', paneTitle: 'Transcripts', paneSubtitle: 'Saved sessions from this device.' },
-      { id: 'memory', label: 'Memory', segmentLabel: 'Memory', paneTitle: 'Memory', paneSubtitle: 'Structured notes the agent can retrieve during tasks.' },
-      { id: 'privacy', label: 'Privacy & system', segmentLabel: 'Privacy', paneTitle: 'Privacy & system', paneSubtitle: 'macOS permissions and a concise activity log.' },
+      { id: 'about', label: 'About', iconBg: 'linear-gradient(180deg, #9ca3af 0%, #6b7280 100%)' },
     ],
   },
 ]
@@ -229,49 +226,63 @@ const SETTINGS_NAV_GROUPS: { section: string; items: SettingsNavEntry[] }[] = [
 const SETTINGS_NAV_FLAT = SETTINGS_NAV_GROUPS.flatMap((g) => g.items)
 
 function SettingsNavGlyph({ tab, color }: { tab: SettingsTabId; color: string }): JSX.Element {
-  const s: React.CSSProperties = { width: 18, height: 18, display: 'block', flexShrink: 0 }
-  const o = { fill: 'none' as const, stroke: color, strokeWidth: 1.6, strokeLinecap: 'round' as const, strokeLinejoin: 'round' as const }
+  const s: React.CSSProperties = { width: 14, height: 14, display: 'block', flexShrink: 0 }
+  const o = { fill: 'none' as const, stroke: color, strokeWidth: 2, strokeLinecap: 'round' as const, strokeLinejoin: 'round' as const }
   switch (tab) {
-    case 'voice':
+    case 'general':
       return (
         <svg viewBox="0 0 24 24" style={s} aria-hidden>
-          <path d="M12 14a3 3 0 0 0 3-3V7a3 3 0 1 0-6 0v4a3 3 0 0 0 3 3Z" {...o} />
-          <path d="M19 11a7 7 0 0 1-14 0M12 18v3" {...o} />
+          <circle cx="12" cy="12" r="3" {...o} />
+          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1Z" {...o} />
         </svg>
       )
-    case 'keys':
+    case 'ai':
       return (
         <svg viewBox="0 0 24 24" style={s} aria-hidden>
-          <circle cx="8" cy="8" r="2.2" {...o} />
-          <path d="M10.5 8h9M17.5 8v6a2 2 0 0 1-2 2h-5" {...o} />
-          <path d="M6 12h4M6 16h4" {...o} />
+          <path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" {...o} />
         </svg>
       )
-    case 'transcripts':
+    case 'history':
       return (
         <svg viewBox="0 0 24 24" style={s} aria-hidden>
           <path d="M8 9h8M8 13h5M8 17h6" {...o} />
           <rect x="4" y="5" width="16" height="14" rx="2.5" {...o} />
         </svg>
       )
-    case 'memory':
+    case 'about':
       return (
         <svg viewBox="0 0 24 24" style={s} aria-hidden>
-          <path d="M6 8h12v10a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V8Z" {...o} />
-          <path d="M6 11h12M9 8V6a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" {...o} />
+          <circle cx="12" cy="12" r="10" {...o} />
+          <path d="M12 16v-4M12 8h.01" {...o} />
         </svg>
       )
-    case 'privacy':
-      return (
-        <svg viewBox="0 0 24 24" style={s} aria-hidden>
-          <path d="M12 21s7-4.35 7-11V6l-7-3-7 3v4c0 6.65 7 11 7 11Z" {...o} />
-          <path d="m9 12 2 2 4-4" {...o} />
-        </svg>
-      )
-    default:
-      return <svg viewBox="0 0 24 24" style={s} aria-hidden />
   }
 }
+
+function KlackKeyCap({ glyph, label }: { glyph: string; label?: string }): JSX.Element {
+  return (
+    <div
+      style={{
+        minWidth:     42,
+        height:       42,
+        padding:      '0 8px',
+        background:   'rgba(0,0,0,0.4)',
+        border:       '1px solid rgba(255,255,255,0.06)',
+        borderRadius: 10,
+        boxShadow:    'inset 0 1px 1px rgba(255,255,255,0.08), 0 2px 4px rgba(0,0,0,0.3)',
+        display:      'flex',
+        flexDirection: 'column',
+        alignItems:   'center',
+        justifyContent: 'center',
+        gap:          2,
+      }}
+    >
+      <span style={{ fontSize: 15, color: '#fff', lineHeight: 1, fontWeight: 500 }}>{glyph}</span>
+      {label ? <span style={{ fontSize: 10, color: 'rgba(255,255,255,0.5)', lineHeight: 1 }}>{label}</span> : null}
+    </div>
+  )
+}
+
 
 const GEMINI_VOICES = [
   // Soft female voices (recommended)
@@ -350,8 +361,94 @@ const fontMono: React.CSSProperties = {
   letterSpacing: '0.04em',
 }
 
+function MacToggleSwitch({ on, ariaLabel }: { on: boolean; ariaLabel: string }): JSX.Element {
+  return (
+    <span
+      role="presentation"
+      aria-hidden
+      style={{
+        width: 36,
+        height: 20,
+        borderRadius: 100,
+        flexShrink: 0,
+        position: 'relative',
+        background: on
+          ? '#fff'
+          : 'rgba(255,255,255,0.16)',
+        boxShadow: on ? 'none' : 'inset 0 1px 2px rgba(0,0,0,0.2)',
+        transition: 'background 0.15s ease',
+      }}
+      title={ariaLabel}
+    >
+      <span
+        style={{
+          position: 'absolute',
+          top: 2,
+          left: on ? 18 : 2,
+          width: 16,
+          height: 16,
+          borderRadius: '50%',
+          background: on ? '#333' : '#fff',
+          boxShadow: '0 1px 2px rgba(0,0,0,0.2)',
+          transition: 'left 0.15s ease, background 0.15s ease',
+        }}
+      />
+    </span>
+  )
+}
+
+function InsetSettingsToggleRow(props: {
+  label: string
+  subtitle?: string
+  extras?: React.ReactNode
+  on: boolean
+  onToggle: () => void
+  testId?: string
+  isLast?: boolean
+}): JSX.Element {
+  return (
+    <button
+      type="button"
+      data-testid={props.testId}
+      onClick={props.onToggle}
+      style={{
+        width: '100%',
+        padding: '0',
+        border: 'none',
+        cursor: 'pointer',
+        textAlign: 'left',
+        background: 'transparent',
+        display: 'flex',
+        color: '#fff',
+      }}
+    >
+      <div style={{ flex: 1, paddingLeft: 16, display: 'flex', flexDirection: 'column' }}>
+        <div style={{ 
+          display: 'flex', 
+          justifyContent: 'space-between', 
+          alignItems: 'center',
+          padding: '12px 16px 12px 0',
+          borderBottom: props.isLast ? 'none' : '1px solid rgba(255,255,255,0.06)',
+          gap: 14
+        }}>
+          <span style={{ minWidth: 0, flex: 1 }}>
+            <span style={{ fontSize: 13, fontWeight: 400, display: 'block', letterSpacing: '0' }}>{props.label}</span>
+            {props.subtitle && (
+              <span style={{ fontSize: 11, color: 'rgba(255,255,255,0.5)', marginTop: 4, display: 'block', lineHeight: 1.35 }}>
+                {props.subtitle}
+              </span>
+            )}
+            {props.extras}
+          </span>
+          <MacToggleSwitch on={props.on} ariaLabel={props.label} />
+        </div>
+      </div>
+    </button>
+  )
+}
+
 export function PanelView() {
-  const [tab, setTab] = useState<SettingsTabId>('keys')
+  const [tab, setTab] = useState<SettingsTabId>('general')
   const [agentState, setAgentState] = useState<JarvizState | string>('idle')
   const [caption, setCaption] = useState({ phase: 'STANDBY', user: '', reply: '' })
   const [diag, setDiag] = useState<Diagnostics | null>(null)
@@ -422,12 +519,10 @@ export function PanelView() {
   // Listen for "focus this section" from main — useLayoutEffect so IPC fired right after show still applies.
   useLayoutEffect(() => {
     return window.jarviz.onPanelFocusSection((section: string) => {
-      if (section === 'keys' || section === 'setup') setTab('keys')
-      else if (section === 'voice')  setTab('voice')
-      else if (section === 'transcripts' || section === 'history') setTab('transcripts')
-      else if (section === 'memory') setTab('memory')
-      else if (section === 'privacy' || section === 'tools') setTab('privacy')
-      else if (section === 'status') setTab('keys')
+      if (section === 'keys' || section === 'setup' || section === 'voice' || section === 'ai') setTab('ai')
+      else if (section === 'transcripts' || section === 'history') setTab('history')
+      else if (section === 'status' || section === 'dashboard' || section === 'about') setTab('about')
+      else setTab('general')
     })
   }, [])
 
@@ -463,7 +558,7 @@ export function PanelView() {
 
   // Refresh transcripts whenever the tab opens
   useEffect(() => {
-    if (tab !== 'transcripts') return
+    if (tab !== 'history') return
     window.jarviz.transcripts.list().then(setSessions).catch(console.error)
   }, [tab])
 
@@ -527,43 +622,52 @@ export function PanelView() {
   }
 
   const paneMeta = SETTINGS_NAV_FLAT.find((n) => n.id === tab)
-  const paneTitle = paneMeta?.paneTitle ?? 'Jarviz'
-  const paneSubtitle = paneMeta?.paneSubtitle ?? 'Preferences for this Mac.'
 
   const tabPaneBody = (
     <>
-      {tab === 'voice' && (
-        <VoiceTab
-          voice={geminiVoice}
-          onChange={setGeminiVoice}
-          onSave={saveSettings}
-          onPreview={previewVoice}
-          previewBusy={previewBusy}
-          previewError={previewError}
-          voiceWarning={voiceWarning}
-          saved={saved}
-        />
-      )}
-      {tab === 'keys' && (
-        <KeysTab
-          diag={diag}
-          accent={accent}
+      <div style={{ padding: '0 0 20px', display: 'flex', alignItems: 'center', gap: 12 }}>
+        <div style={{
+          width: 32, height: 32, borderRadius: 8,
+          background: tab === 'general' ? 'linear-gradient(180deg, #555 0%, #333 100%)' : paneMeta?.iconBg,
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.2), 0 2px 4px rgba(0,0,0,0.3)'
+        }}>
+          <SettingsNavGlyph tab={tab} color="#fff" />
+        </div>
+        <div style={{ fontSize: 20, fontWeight: 600, color: '#fff', letterSpacing: '-0.02em' }}>
+          {paneMeta?.label}
+        </div>
+      </div>
+      
+      {tab === 'general' && (
+        <GeneralTab
           miniMode={miniMode}
           onToggleMini={toggleMini}
           launchAtLogin={launchAtLogin}
           onToggleLaunchAtLogin={toggleLaunchAtLogin}
           memorySync={memorySync}
           onToggleMemorySync={toggleMemorySync}
+        />
+      )}
+      {tab === 'ai' && (
+        <AiTab
+          voice={geminiVoice}
+          onChange={setGeminiVoice}
+          whisperModel={whisperModel} setWhisperModel={setWhisperModel}
+          wakeWordMode={wakeWordMode} setWakeWordMode={setWakeWordMode}
+          onSave={saveSettings}
+          onPreview={previewVoice}
+          previewBusy={previewBusy}
+          previewError={previewError}
+          voiceWarning={voiceWarning}
           llmBackend={llmBackend} setLlmBackend={setLlmBackend}
           emergentProvider={emergentProvider} setEmergentProvider={setEmergentProvider}
           emergentModel={emergentModel} setEmergentModel={setEmergentModel}
-          whisperModel={whisperModel} setWhisperModel={setWhisperModel}
-          wakeWordMode={wakeWordMode} setWakeWordMode={setWakeWordMode}
           keys={keys} setKeys={setKeys}
-          onSave={saveSettings} saved={saved}
+          saved={saved}
         />
       )}
-      {tab === 'transcripts' && (
+      {tab === 'history' && (
         <TranscriptsTab
           sessions={sessions}
           openSession={openSession}
@@ -571,11 +675,8 @@ export function PanelView() {
           refresh={() => window.jarviz.transcripts.list().then(setSessions)}
         />
       )}
-      {tab === 'memory' && (
-        <PanelMemoryTab />
-      )}
-      {tab === 'privacy' && (
-        <PanelToolsTab />
+      {tab === 'about' && (
+        <AboutTab diag={diag} />
       )}
     </>
   )
@@ -744,10 +845,10 @@ export function PanelView() {
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 16 }}>
                   <div style={{ minWidth: 0 }}>
                     <div style={{ fontSize: 26, fontWeight: 600, letterSpacing: '-0.04em', color: cx.titleColor, lineHeight: 1.12 }}>
-                      {paneTitle}
+                      {paneMeta?.label ?? 'Jarviz'}
                     </div>
                     <div style={{ fontSize: 12, color: cx.textSub, marginTop: 6, lineHeight: 1.45, maxWidth: 420 }}>
-                      {paneSubtitle}
+                      Settings for this Mac.
                     </div>
                   </div>
                   <div style={{ flexShrink: 0, textAlign: 'right' }}>
@@ -907,7 +1008,7 @@ export function PanelView() {
                         boxShadow: active ? '0 2px 6px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.12)' : undefined,
                       }}
                     >
-                      {item.segmentLabel}
+                      {item.label}
                     </button>
                   )
                 })}
@@ -960,301 +1061,98 @@ function buttonPrimaryStyle(cx: PanelChrome, saved: boolean): React.CSSPropertie
   }
 }
 
+
 // ── Tabs ───────────────────────────────────────────────────────────────────
 
-function MenuSection({ title, children, style }: { title: string; children: React.ReactNode; style?: React.CSSProperties }): React.ReactElement {
-  const cx = useCx()
-  const glass = cx.uiMode === 'glass'
-  if (glass) {
-    return (
-      <div style={{ marginBottom: 22, ...style }}>
+function MenuSection({ title, children, style }: { title?: string; children: React.ReactNode; style?: React.CSSProperties }): React.ReactElement {
+  return (
+    <div style={{ marginBottom: 24, ...style }}>
+      {title && (
         <div
           style={{
             fontSize: 12,
-            fontWeight: 600,
-            letterSpacing: '0.01em',
-            color: cx.textSub,
+            fontWeight: 500,
+            color: 'rgba(255,255,255,0.5)',
             marginBottom: 8,
-            paddingLeft: 2,
+            paddingLeft: 4,
           }}
         >
           {title}
         </div>
-        <div
-          style={{
-            borderRadius: cx.radiusIn,
-            border: '1px solid rgba(255,255,255,0.11)',
-            background: 'linear-gradient(180deg, rgba(255,255,255,0.07) 0%, rgba(255,255,255,0.03) 100%), rgba(255,255,255,0.04)',
-            overflow: 'hidden',
-            boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.12), 0 12px 40px rgba(0,0,0,0.2)',
-            backdropFilter: 'blur(48px) saturate(200%)',
-            WebkitBackdropFilter: 'blur(48px) saturate(200%)',
-          }}
-        >
-          {children}
-        </div>
-      </div>
-    )
-  }
-  return (
-    <div style={{ marginBottom: 16, ...style }}>
-      <div style={{
-        borderRadius: cx.radiusIn,
-        border: `1px solid ${cx.hairline}`,
-        background: cx.fillGroup,
-        overflow: 'hidden',
-      }}
-      >
-        <div style={{
-          padding: '7px 12px',
-          fontSize: 11,
-          fontWeight: 600,
-          letterSpacing: '0.05em',
-          textTransform: 'uppercase',
-          color: cx.textSoft,
-          background: cx.fillGroupHd,
-          borderBottom: `1px solid ${cx.hairline}`,
+      )}
+      <div
+        style={{
+          borderRadius: 12,
+          border: '1px solid rgba(255,255,255,0.08)',
+          background: 'rgba(255,255,255,0.05)',
+          overflow: 'hidden',
+          display: 'flex',
+          flexDirection: 'column',
         }}
-        >{title}
-        </div>
+      >
         {children}
       </div>
     </div>
   )
 }
 
-function PanelMemoryTab(): JSX.Element {
-  const f = useFields()
-  return <MemoryTab chrome={f.cx} MenuSection={MenuSection} buttonSecondary={f.buttonSecondary} />
-}
-function PanelToolsTab(): JSX.Element {
-  const f = useFields()
-  return <ToolsTab chrome={f.cx} MenuSection={MenuSection} buttonSecondary={f.buttonSecondary} />
-}
-
-interface VoiceProps {
-  voice: string
-  onChange: (v: string) => void
-  onSave: () => Promise<void>
-  onPreview: () => Promise<void>
-  previewBusy: boolean
-  previewError: string | null
-  voiceWarning: string | null
-  saved: boolean
-}
-function VoiceTab({ voice, onChange, onSave, onPreview, previewBusy, previewError, voiceWarning, saved }: VoiceProps) {
-  const f = useFields()
-  const cx = f.cx
+function GeneralTab(p: {
+  miniMode: boolean; onToggleMini: () => void;
+  launchAtLogin: boolean; onToggleLaunchAtLogin: () => void;
+  memorySync: boolean; onToggleMemorySync: () => void;
+}) {
   return (
     <div style={{ paddingTop: 4 }}>
-      <MenuSection title="Spoken output">
-        <div style={{ padding: '12px 12px 4px' }}>
-          <select
-            data-testid="panel-voice-select"
-            value={voice}
-            onChange={(e) => onChange(e.target.value)}
-            style={f.selectStyle}
-          >
-            {GEMINI_VOICES.map((v) => (
-              <option key={v.id} value={v.id}>
-                {v.label}
-              </option>
-            ))}
-          </select>
-        </div>
-        {voiceWarning && (
-          <div style={{ padding: '0 12px 12px', fontSize: 12, lineHeight: 1.52, color: 'rgba(255,180,164,0.95)' }}>
-            <div style={{ padding: '10px 11px', borderRadius: 8, background: 'rgba(234,104,104,0.12)', border: `1px solid rgba(242,139,130,0.35)` }}>
-              {voiceWarning}
-            </div>
-          </div>
-        )}
-        <div style={{ display: 'flex', gap: 8, padding: '10px 12px 12px', borderTop: `1px solid ${cx.hairline}` }}>
-          <button
-            type="button"
-            data-testid="panel-voice-preview"
-            onClick={onPreview}
-            disabled={previewBusy}
-            style={{
-              ...f.buttonSecondary,
-              flex: 1,
-              padding: '10px 12px',
-              opacity: previewBusy ? 0.65 : 1,
-              cursor: previewBusy ? 'wait' : 'pointer',
-              background: 'rgba(154,138,246,0.15)',
-              borderColor: 'rgba(160,148,246,0.35)',
-            }}
-          >
-            {previewBusy ? 'Playing…' : 'Preview'}
-          </button>
-          <button type="button" data-testid="panel-voice-save" onClick={onSave} style={{ ...f.buttonSecondary, flex: 1, padding: '10px 12px' }}>
-            {saved ? 'Saved' : 'Save'}
-          </button>
+      <MenuSection>
+        <InsetSettingsToggleRow
+          label="Launch at login"
+          on={p.launchAtLogin}
+          onToggle={p.onToggleLaunchAtLogin}
+        />
+        <InsetSettingsToggleRow
+          label="Sync memory to cloud"
+          on={p.memorySync}
+          onToggle={p.onToggleMemorySync}
+        />
+        <InsetSettingsToggleRow
+          label="Mini orb mode"
+          on={p.miniMode}
+          onToggle={p.onToggleMini}
+          isLast
+        />
+      </MenuSection>
+      
+      <MenuSection title="Mini Mode Hotkey">
+        <div style={{ display: 'flex', gap: 6, padding: '16px' }}>
+          <KlackKeyCap glyph="⇧" label="shift" />
+          <KlackKeyCap glyph="⌃" label="ctrl" />
+          <KlackKeyCap glyph="⌘" label="cmd" />
+          <KlackKeyCap glyph="M" />
         </div>
       </MenuSection>
-
-      {previewError && (
-        <div style={{ marginTop: -4, padding: '0 0 8px', fontSize: 12, color: 'rgba(180,60,50,0.95)' }}>
-          <div style={{ padding: '10px 12px', borderRadius: cx.radiusIn, border: `1px solid rgba(242,139,130,0.35)`, background: 'rgba(242,139,130,0.08)' }}>
-            {previewError}
-          </div>
-        </div>
-      )}
-
-      <p style={{ fontSize: 12, lineHeight: 1.55, color: cx.textSub, margin: '4px 2px 0' }}>
-        Gemini voices need a free <strong style={{ fontWeight: 600, color: cx.textMain }}>GEMINI_API_KEY</strong>. Without one, the app uses browser TTS.
-      </p>
     </div>
   )
 }
 
-interface KeysProps {
-  diag: Diagnostics | null
-  accent: string
-  miniMode: boolean
-  onToggleMini: () => void
-  launchAtLogin: boolean
-  onToggleLaunchAtLogin: () => void
-  memorySync: boolean
-  onToggleMemorySync: () => void
-  llmBackend: string; setLlmBackend: (v: string) => void
-  emergentProvider: string; setEmergentProvider: (v: string) => void
-  emergentModel: string; setEmergentModel: (v: string) => void
-  whisperModel: string; setWhisperModel: (v: string) => void
-  wakeWordMode: 'phrases' | 'picovoice'; setWakeWordMode: (v: 'phrases' | 'picovoice') => void
-  keys: Record<string, string>; setKeys: React.Dispatch<React.SetStateAction<Record<string, string>>>
-  onSave: () => Promise<void>
-  saved: boolean
-}
-function KeysTab(p: KeysProps) {
+function AiTab(p: {
+  voice: string; onChange: (v: string) => void;
+  whisperModel: string; setWhisperModel: (v: string) => void;
+  wakeWordMode: string; setWakeWordMode: (v: any) => void;
+  onSave: () => Promise<void>;
+  onPreview: () => Promise<void>;
+  previewBusy: boolean; previewError: string | null; voiceWarning: string | null;
+  llmBackend: string; setLlmBackend: (v: string) => void;
+  emergentProvider: string; setEmergentProvider: (v: string) => void;
+  emergentModel: string; setEmergentModel: (v: string) => void;
+  keys: Record<string, string>; setKeys: React.Dispatch<React.SetStateAction<Record<string, string>>>;
+  saved: boolean;
+}) {
   const f = useFields()
-  const cx = f.cx
-
-  useEffect(() => {
-    const list = PROVIDER_MODELS[p.emergentProvider]
-    if (list && list.length && !list.some((m) => m.value === p.emergentModel)) {
-      p.setEmergentModel(list[0].value)
-    }
-  }, [p.emergentProvider, p.emergentModel, p.setEmergentModel])
-
-  const sectionLabelStyle: React.CSSProperties = {
-    fontSize: 11,
-    letterSpacing: '0.06em',
-    fontWeight: 600,
-    color: cx.textSoft,
-    margin: '0 0 6px',
-    textTransform: 'uppercase',
-  }
-
   return (
     <div style={{ paddingTop: 4 }}>
-      {p.diag && (
-        <>
-          <MenuSection title="Runtime diagnostics">
-            <MenuRow label="Platform" value={p.diag.platform} />
-            <MenuRow label="Uptime" value={fmtUptime(p.diag.uptimeMs)} mono />
-            <MenuRow label="Memory" value={`${p.diag.memoryMB.toFixed(0)} MB`} mono />
-            <MenuRow label="LLM backend" value={p.diag.llmBackend} accent={p.accent} isLast />
-          </MenuSection>
-          <MenuSection title="Credentials">
-            <MenuRow
-              label="Emergent universal key"
-              value={p.diag.envHasEmergentKey ? 'Configured' : 'Not set'}
-              accent={p.diag.envHasEmergentKey ? '#94d4a8' : '#f1918c'}
-            />
-            <MenuRow
-              label="Gemini API key"
-              value={p.diag.envHasGeminiKey ? 'Configured' : 'Not set · browser TTS'}
-              accent={p.diag.envHasGeminiKey ? '#94d4a8' : '#f1918c'}
-            />
-            <MenuRow label="Active voice" value={p.diag.envGeminiVoice || 'Off'} accent={p.accent} isLast />
-          </MenuSection>
-        </>
-      )}
-      <MenuSection title="Appearance">
-        <button
-          type="button"
-          data-testid="panel-mini-toggle"
-          onClick={p.onToggleMini}
-          style={{
-            width: '100%',
-            padding: '12px 14px',
-            margin: 0,
-            border: 'none',
-            cursor: 'pointer',
-            textAlign: 'left',
-            background: p.miniMode ? 'rgba(138,118,228,0.18)' : 'transparent',
-            color: cx.textMain,
-            fontSize: 13,
-            display: 'flex',
-            justifyContent: 'space-between',
-            alignItems: 'center',
-          }}
-        >
-          <span>
-            <strong style={{ fontWeight: 600 }}>Mini orb mode</strong>
-            <div style={{ fontSize: 11, color: cx.textSub, marginTop: 4 }}>⌘⇧M / Ctrl⇧M</div>
-          </span>
-          <span style={{ fontSize: 12, color: cx.textSub }}>{p.miniMode ? 'On' : 'Off'}</span>
-        </button>
-      </MenuSection>
-      <MenuSection title="Login items">
-        <button
-          type="button"
-          data-testid="panel-launch-at-login-toggle"
-          onClick={p.onToggleLaunchAtLogin}
-          style={{
-            width: '100%',
-            padding: '12px 14px',
-            margin: 0,
-            border: 'none',
-            cursor: 'pointer',
-            textAlign: 'left',
-            background: p.launchAtLogin ? 'rgba(138,180,248,0.14)' : 'transparent',
-            color: cx.textMain,
-            fontSize: 13,
-            display: 'flex',
-            justifyContent: 'space-between',
-            alignItems: 'center',
-          }}
-        >
-          <span>
-            <strong style={{ fontWeight: 600 }}>Launch at login</strong>
-            <div style={{ fontSize: 11, color: cx.textSub, marginTop: 4 }}>Start Jarviz automatically when you sign in.</div>
-          </span>
-          <span style={{ fontSize: 12, color: cx.textSub }}>{p.launchAtLogin ? 'On' : 'Off'}</span>
-        </button>
-      </MenuSection>
-      <MenuSection title="Knowledge sync">
-        <button
-          type="button"
-          data-testid="panel-memory-sync-toggle"
-          onClick={p.onToggleMemorySync}
-          style={{
-            width: '100%',
-            padding: '12px 14px',
-            margin: 0,
-            border: 'none',
-            cursor: 'pointer',
-            textAlign: 'left',
-            background: p.memorySync ? 'rgba(168,216,185,0.16)' : 'transparent',
-            color: cx.textMain,
-            fontSize: 13,
-            display: 'flex',
-            justifyContent: 'space-between',
-            alignItems: 'center',
-          }}
-        >
-          <span>
-            <strong style={{ fontWeight: 600 }}>Sync memory (cloud)</strong>
-            <div style={{ fontSize: 11, color: cx.textSub, marginTop: 4 }}>Default is local-only. Cloud sync will be added next.</div>
-          </span>
-          <span style={{ fontSize: 12, color: cx.textSub }}>{p.memorySync ? 'On' : 'Off'}</span>
-        </button>
-      </MenuSection>
-      <MenuSection title="Language model">
-        <div style={{ padding: 12 }}>
-          <select data-testid="panel-backend-select" value={p.llmBackend} onChange={(e) => p.setLlmBackend(e.target.value)} style={f.selectStyle}>
+      <MenuSection title="Intelligence">
+        <div style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <select value={p.llmBackend} onChange={(e) => p.setLlmBackend(e.target.value)} style={f.selectStyle}>
             <option value="emergent">Emergent universal key</option>
             <option value="anthropic">Anthropic (your key)</option>
             <option value="openai">OpenAI (your key)</option>
@@ -1263,96 +1161,69 @@ function KeysTab(p: KeysProps) {
             <option value="xai">xAI Grok</option>
           </select>
           {p.llmBackend === 'emergent' && (
-            <div style={{ marginTop: 10 }}>
-              <div style={{ ...sectionLabelStyle, margin: '14px 0 8px' }}>Emergent routing</div>
+            <>
               <select value={p.emergentProvider} onChange={(e) => p.setEmergentProvider(e.target.value)} style={f.selectStyle}>
                 <option value="anthropic">Anthropic Claude</option>
                 <option value="openai">OpenAI GPT</option>
                 <option value="gemini">Google Gemini</option>
               </select>
-              <div style={{ marginTop: 8 }}>
-                <select value={p.emergentModel} onChange={(e) => p.setEmergentModel(e.target.value)} style={f.selectStyle}>
-                  {(PROVIDER_MODELS[p.emergentProvider] ?? []).map((m) => (
-                    <option key={m.value} value={m.value}>{m.label}</option>
-                  ))}
-                </select>
-              </div>
-            </div>
+              <select value={p.emergentModel} onChange={(e) => p.setEmergentModel(e.target.value)} style={f.selectStyle}>
+                {(PROVIDER_MODELS[p.emergentProvider] ?? []).map((m) => (
+                  <option key={m.value} value={m.value}>{m.label}</option>
+                ))}
+              </select>
+            </>
           )}
         </div>
       </MenuSection>
 
-      <MenuSection title="Speech to text">
-        <div style={{ padding: 12 }}>
-          <select value={p.whisperModel} onChange={(e) => p.setWhisperModel(e.target.value)} style={f.selectStyle}>
-            <option value="tiny">Tiny — fastest · 39 MB</option>
-            <option value="base">Base — balanced · 145 MB</option>
-            <option value="small">Small — accurate · 466 MB</option>
-            <option value="medium">Medium — high accuracy · 1.5 GB</option>
-            <option value="large-v3">Large — best accuracy · 3 GB</option>
+      <MenuSection title="Voice & Speech">
+        <div style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <select value={p.voice} onChange={(e) => p.onChange(e.target.value)} style={f.selectStyle}>
+            {GEMINI_VOICES.map((v) => <option key={v.id} value={v.id}>{v.label}</option>)}
           </select>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button type="button" onClick={p.onPreview} disabled={p.previewBusy} style={{ ...f.buttonSecondary, flex: 1, padding: '10px 12px' }}>
+              {p.previewBusy ? 'Playing…' : 'Preview'}
+            </button>
+            <button type="button" onClick={p.onSave} style={{ ...f.buttonSecondary, flex: 1, padding: '10px 12px', background: p.saved ? 'rgba(255,255,255,0.2)' : f.buttonSecondary.background }}>
+              {p.saved ? 'Saved' : 'Save'}
+            </button>
+          </div>
+          {p.previewError && <div style={{ color: '#f87171', fontSize: 12 }}>{p.previewError}</div>}
+          {p.voiceWarning && <div style={{ color: '#fbbf24', fontSize: 12 }}>{p.voiceWarning}</div>}
         </div>
       </MenuSection>
 
-      <MenuSection title="Wake word">
-        <div style={{ padding: 12 }}>
-          <select
-            data-testid="panel-wake-word-mode"
-            value={p.wakeWordMode}
-            onChange={(e) => p.setWakeWordMode(e.target.value === 'picovoice' ? 'picovoice' : 'phrases')}
-            style={f.selectStyle}
-          >
-            <option value="phrases">Phrases — Silero + Whisper (e.g. “hey jarviz”, “ok jarvis”) — recommended</option>
-            <option value="picovoice">Picovoice — keyword “Jarvis” only; needs PICOVOICE_ACCESS_KEY + app restart</option>
-          </select>
-          <p style={{ fontSize: 12, lineHeight: 1.5, color: cx.textSub, marginTop: 10 }}>
-            Picovoice is optional. If it fails in your environment, keep <strong style={{ fontWeight: 600, color: cx.textMain }}>Phrases</strong>, save, and restart the app.
-          </p>
-        </div>
-      </MenuSection>
-
-      <MenuSection title="API keys & environment">
-        <div style={{ maxHeight: 320, overflow: 'auto', WebkitOverflowScrolling: 'touch' }}>
-          {ENV_KEYS.map((k, i, arr) => (
-            <div
-              key={k}
-              style={{
-                padding: '12px 12px',
-                borderBottom: i < arr.length - 1 ? `1px solid ${cx.hairline}` : undefined,
-              }}
-            >
-              <div style={{ fontSize: 11, fontWeight: 600, color: cx.textSoft, marginBottom: 6, letterSpacing: '0.04em', fontFamily: '"JetBrains Mono", Menlo, monospace' }}>{k}</div>
+      <MenuSection title="API Keys">
+        <div style={{ maxHeight: 200, overflow: 'auto', padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
+          {ENV_KEYS.map((k) => (
+            <div key={k}>
+              <div style={{ fontSize: 11, fontWeight: 500, color: 'rgba(255,255,255,0.5)', marginBottom: 6 }}>{k}</div>
               <input
-                data-testid={`panel-key-${k.toLowerCase()}`}
                 type="password"
                 value={p.keys[k] ?? ''}
                 placeholder={ENV_KEY_HINTS[k]}
-                autoComplete="off"
                 onChange={(e) => p.setKeys((prev) => ({ ...prev, [k]: e.target.value }))}
                 style={{ ...f.inputStyle, fontSize: 11 }}
               />
             </div>
           ))}
         </div>
-        <div style={{ borderTop: `1px solid ${cx.hairline}`, padding: 12 }}>
-          <button type="button" data-testid="panel-keys-save" onClick={p.onSave} style={{ ...buttonPrimaryStyle(cx, p.saved), marginTop: 0 }}>
-            {p.saved ? 'Saved' : 'Save settings'}
-          </button>
+        <div style={{ padding: 16, borderTop: '1px solid rgba(255,255,255,0.06)' }}>
+           <button type="button" onClick={p.onSave} style={{ ...f.buttonSecondary, width: '100%', padding: '10px 12px', background: p.saved ? 'rgba(255,255,255,0.2)' : f.buttonSecondary.background }}>
+              {p.saved ? 'Saved' : 'Save Keys'}
+            </button>
         </div>
       </MenuSection>
     </div>
   )
 }
 
-interface TranscriptsProps {
-  sessions: Array<{ id: string; startedAt: number; endedAt: number; preview: string; turns: number }>
-  openSession: { id: string; preview: string; turns: Array<{ role: string; text: string; ts: number }> } | null
-  setOpenSession: (s: { id: string; preview: string; turns: Array<{ role: string; text: string; ts: number }> } | null) => void
-  refresh: () => Promise<void>
-}
-function TranscriptsTab(p: TranscriptsProps) {
+function TranscriptsTab(p: {
+  sessions: Array<any>; openSession: any; setOpenSession: any; refresh: () => void;
+}) {
   const f = useFields()
-  const cx = f.cx
   const open = async (id: string): Promise<void> => {
     const s = await window.jarviz.transcripts.get(id)
     if (s) p.setOpenSession({ id: s.id, preview: s.preview, turns: s.turns })
@@ -1361,7 +1232,7 @@ function TranscriptsTab(p: TranscriptsProps) {
     if (!confirm('Delete this conversation?')) return
     await window.jarviz.transcripts.delete(id)
     if (p.openSession?.id === id) p.setOpenSession(null)
-    void p.refresh()
+    p.refresh()
   }
 
   if (p.openSession) {
@@ -1371,91 +1242,87 @@ function TranscriptsTab(p: TranscriptsProps) {
           ← History
         </button>
         <MenuSection title="Conversation">
-          <div style={{ padding: '10px 12px', fontWeight: 600, borderBottom: `1px solid ${cx.hairline}`, color: cx.textMain }}>{p.openSession.preview || '(empty)'}</div>
-          {p.openSession.turns.map((t, i, arr) => (
+          <div style={{ padding: '12px 16px', fontWeight: 600, borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
+            {p.openSession.preview || '(empty)'}
+          </div>
+          {p.openSession.turns.map((t: any, i: number, arr: any) => (
             <div
               key={i}
               style={{
-                padding: '11px 12px',
-                borderBottom: i < arr.length - 1 ? `1px solid ${cx.hairline}` : undefined,
-                background: t.role === 'user' ? 'rgba(138,180,248,0.06)' : 'rgba(251,188,68,0.05)',
+                padding: '12px 16px',
+                borderBottom: i < arr.length - 1 ? '1px solid rgba(255,255,255,0.06)' : 'none',
+                background: t.role === 'user' ? 'rgba(255,255,255,0.02)' : 'transparent',
               }}
             >
-              <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: '0.08em', textTransform: 'uppercase', color: t.role === 'user' ? '#9bb8ff' : '#e8c86a', marginBottom: 6 }}>
-                {t.role === 'user' ? 'You' : 'Assistant'}
+              <div style={{ fontSize: 10, fontWeight: 600, color: t.role === 'user' ? '#60a5fa' : '#a78bfa', marginBottom: 6 }}>
+                {t.role === 'user' ? 'You' : 'Jarviz'}
               </div>
-              <div style={{ fontSize: 13, lineHeight: 1.5, color: cx.textMain }}>{t.text}</div>
+              <div style={{ fontSize: 13, lineHeight: 1.4, whiteSpace: 'pre-wrap' }}>{t.text}</div>
             </div>
           ))}
         </MenuSection>
-        <button type="button" onClick={() => del(p.openSession!.id)} style={{ ...f.buttonSecondary, width: '100%', marginTop: 8, background: 'rgba(234,76,76,0.14)', borderColor: 'rgba(234,104,104,0.42)' }}>
-          Delete session
-        </button>
       </div>
     )
   }
 
   return (
     <div style={{ paddingTop: 4 }}>
-      <MenuSection title={`Sessions · ${p.sessions.length}`}>
+      <MenuSection>
+        {p.sessions.map((s, i, arr) => (
+          <div
+            key={s.id}
+            style={{
+              padding: '12px 16px',
+              borderBottom: i < arr.length - 1 ? '1px solid rgba(255,255,255,0.06)' : 'none',
+              cursor: 'pointer',
+              display: 'flex',
+              gap: 12,
+              alignItems: 'center',
+            }}
+            onClick={() => open(s.id)}
+          >
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: 13, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                {s.preview || 'Empty session'}
+              </div>
+              <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.5)', marginTop: 4 }}>
+                {new Date(s.startedAt).toLocaleString()}
+              </div>
+            </div>
+            <button type="button" onClick={(e) => { e.stopPropagation(); del(s.id); }} style={{ background: 'none', border: 'none', color: '#f87171', cursor: 'pointer', fontSize: 11 }}>
+              Delete
+            </button>
+          </div>
+        ))}
         {p.sessions.length === 0 && (
-          <div style={{ padding: '18px 14px', fontSize: 13, color: cx.textSoft }}>
-            Nothing saved yet. Chat from the orb to build history here.
+          <div style={{ padding: 24, textAlign: 'center', color: 'rgba(255,255,255,0.4)', fontSize: 13 }}>
+            No history yet.
           </div>
         )}
-        {p.sessions.map((s, i, arr) => (
-          <button
-            key={s.id}
-            type="button"
-            data-testid={`panel-transcript-${s.id}`}
-            onClick={() => open(s.id)}
-            style={{
-              width: '100%',
-              textAlign: 'left',
-              padding: '13px 14px',
-              border: 'none',
-              borderBottom: i < arr.length - 1 ? `1px solid ${cx.hairline}` : undefined,
-              cursor: 'pointer',
-              color: cx.textMain,
-              background: 'rgba(255,255,255,0.02)',
-              display: 'block',
-            }}
-          >
-            <div style={{ fontSize: 13, fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{s.preview || '(empty)'}</div>
-            <div style={{ fontSize: 11, color: cx.textSub, marginTop: 4 }}>
-              {new Date(s.startedAt).toLocaleString()} · {s.turns} turns
-            </div>
-          </button>
-        ))}
       </MenuSection>
-      {p.sessions.length > 0 && (
-        <button type="button" onClick={async () => {
-          if (!confirm('Delete ALL saved conversations?')) return
-          await window.jarviz.transcripts.clear()
-          void p.refresh()
-        }} style={{ ...f.buttonSecondary, marginTop: 10, width: '100%', background: 'rgba(234,76,76,0.12)', borderColor: 'rgba(234,104,104,0.38)' }}>
-          Clear all
-        </button>
-      )}
     </div>
   )
 }
 
-function MenuRow({ label, value, mono, accent, isLast }: { label: string; value: string; mono?: boolean; accent?: string; isLast?: boolean }): React.ReactElement {
-  const cx = useCx()
+function AboutTab(p: { diag: any }) {
   return (
-    <div
-      style={{
-        display: 'flex',
-        justifyContent: 'space-between',
-        alignItems: 'center',
-        gap: 14,
-        padding: '11px 14px',
-        borderBottom: isLast ? 'none' : `1px solid ${cx.hairline}`,
-      }}
-    >
-      <span style={{ fontSize: 13, color: cx.textSoft }}>{label}</span>
-      <span style={{ ...(mono ? fontMono : {}), fontSize: 13, color: accent ?? cx.textMain, fontWeight: accent ? 600 : 500, textAlign: 'right' }}>{value}</span>
+    <div style={{ paddingTop: 4 }}>
+      <MenuSection title="System">
+        <div style={{ padding: '16px' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
+            <span style={{ color: 'rgba(255,255,255,0.5)' }}>Version</span>
+            <span>0.4.0</span>
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
+            <span style={{ color: 'rgba(255,255,255,0.5)' }}>Platform</span>
+            <span>{p.diag?.platform ?? '—'}</span>
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+            <span style={{ color: 'rgba(255,255,255,0.5)' }}>Memory footprint</span>
+            <span>{p.diag?.memoryMB != null ? `${p.diag.memoryMB.toFixed(0)} MB` : '—'}</span>
+          </div>
+        </div>
+      </MenuSection>
     </div>
   )
 }

@@ -1,6 +1,15 @@
 import Groq from 'groq-sdk'
 import type Anthropic from '@anthropic-ai/sdk'
 import { TOOLS, executeTool, type ToolResult } from './tools'
+import { getMcpToolsForAnthropic } from './mcp-registry'
+
+function buildOpenAiStyleTools(): Groq.Chat.ChatCompletionTool[] {
+  const mcp = getMcpToolsForAnthropic()
+  return [...TOOLS, ...mcp].map(t => ({
+    type: 'function' as const,
+    function: { name: t.name, description: t.description, parameters: t.input_schema },
+  }))
+}
 
 type StateCallback = (state: 'thinking' | 'searching') => void
 
@@ -51,13 +60,16 @@ INFORMATION
 - crypto_price, stock_price, currency_convert
 
 USER MACHINE
-- read_file, list_directory, search_files (paths must be absolute)
+- read_file, read_pdf (PDF text layer — scan-only PDFs: ask user to open file + use see_screen), list_directory, search_files (paths must be absolute)
 - read_clipboard, write_clipboard
 - system_info — OS, CPU, memory of the user's machine
 
+MCP (optional)
+- Tools whose names start with jmcp_ come from user-configured Model Context Protocol servers. Use them when they match the user’s request (e.g. GitHub, Slack, custom integrations).
+
 ACTIONS
 - open_url, open_app, open_path
-- run_command — execute a shell command (git, ls, mkdir, ffmpeg…)
+- run_command — execute a shell command (git, ls, mkdir, ffmpeg…). High-risk patterns (sudo, rm -rf, curl|sh, …) are blocked unless the user enabled “Allow destructive shell” in Settings.
 - notify — native desktop notification
 
 VISION & INPUT (the JARVIS superpower)
@@ -77,10 +89,6 @@ AGENT BEHAVIOR
 // All OpenAI-compatible backends share the same message format
 type Message = Groq.Chat.ChatCompletionMessageParam
 
-const GROQ_TOOLS: Groq.Chat.ChatCompletionTool[] = TOOLS.map(t => ({
-  type: 'function' as const,
-  function: { name: t.name, description: t.description, parameters: t.input_schema },
-}))
 
 // Helper: turn a tool result into a follow-up user message containing image(s).
 // OpenAI-compatible providers (incl. Emergent proxy) accept content arrays with image_url parts.
@@ -103,10 +111,7 @@ async function runOpenAICompatible(
   const Openai = (await import('openai')).default
   const client = new Openai({ apiKey: opts.apiKey, baseURL: opts.baseURL })
 
-  const tools = TOOLS.map(t => ({
-    type: 'function' as const,
-    function: { name: t.name, description: t.description, parameters: t.input_schema },
-  }))
+  const tools = buildOpenAiStyleTools()
 
   for (let turn = 0; turn < MAX_TURNS; turn++) {
     const response = await withTimeout(
@@ -114,16 +119,16 @@ async function runOpenAICompatible(
         model:       opts.model,
         max_tokens:  1024,
         messages:    [{ role: 'system', content: SYSTEM }, ...messages] as never,
-        tools,
+        tools:       tools as any,
         tool_choice: 'auto',
       }),
       LLM_TIMEOUT_MS,
       opts.label,
     )
 
-    const msg = response.choices[0].message
+    const msg = (response as any).choices[0].message
     messages.push(msg as unknown as Message)
-    const finish = response.choices[0].finish_reason
+    const finish = (response as any).choices[0].finish_reason
 
     if (finish === 'stop' || (!msg.tool_calls?.length && msg.content)) {
       return { reply: msg.content?.trim() ?? '', messages }
@@ -162,7 +167,7 @@ async function runGroq(
         model:       'llama-3.3-70b-versatile',
         max_tokens:  1024,
         messages:    [{ role: 'system', content: SYSTEM }, ...messages],
-        tools:       GROQ_TOOLS,
+        tools:       buildOpenAiStyleTools(),
         tool_choice: 'auto',
       }),
       LLM_TIMEOUT_MS,
@@ -267,6 +272,29 @@ function openAiToAnthropicMessages(messages: Message[]): Anthropic.Messages.Mess
   return out
 }
 
+function buildAnthropicTools(): Anthropic.Messages.ToolUnion[] {
+  const mcp = getMcpToolsForAnthropic()
+  const merged = [...TOOLS, ...mcp] as Anthropic.Messages.ToolUnion[]
+  const cacheOn = process.env.ANTHROPIC_PROMPT_CACHE !== '0' && process.env.ANTHROPIC_PROMPT_CACHE !== 'false'
+  if (!cacheOn || merged.length === 0) return merged
+  return merged.map((t, i) =>
+    i === merged.length - 1 ? { ...t, cache_control: { type: 'ephemeral' as const } } : { ...t },
+  )
+}
+
+function anthropicSystemParam(): string | Anthropic.Messages.TextBlockParam[] {
+  const cacheOn = process.env.ANTHROPIC_PROMPT_CACHE !== '0' && process.env.ANTHROPIC_PROMPT_CACHE !== 'false'
+  if (cacheOn) {
+    return [{ type: 'text' as const, text: SYSTEM, cache_control: { type: 'ephemeral' as const } }]
+  }
+  return SYSTEM
+}
+
+function looksLikeThinkingUnsupported(err: unknown): boolean {
+  const msg = `${(err as Error)?.message ?? err}`
+  return /thinking|extended_thinking|invalid_request|not supported|400|403/i.test(msg)
+}
+
 async function runAnthropic(
   messages: Message[],
   onState: StateCallback,
@@ -274,21 +302,39 @@ async function runAnthropic(
   const AnthropicSdk = (await import('@anthropic-ai/sdk')).default
   const client = new AnthropicSdk({ apiKey: process.env.ANTHROPIC_API_KEY })
   const model = process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-5-20250929'
+  const tools = buildAnthropicTools()
+  const maxTokens = 8192
+  const thinkingOn = process.env.ANTHROPIC_THINKING !== '0' && process.env.ANTHROPIC_THINKING !== 'false'
 
   for (let turn = 0; turn < MAX_TURNS; turn++) {
     const anthMsgs = openAiToAnthropicMessages(messages)
 
-    const response = await withTimeout(
-      client.messages.create({
-        model,
-        max_tokens: 1024,
-        system:     SYSTEM,
-        tools:      TOOLS,
-        messages:   anthMsgs,
-      }),
-      LLM_TIMEOUT_MS,
-      'Anthropic',
-    )
+    const base = (includeThinking: boolean): Anthropic.Messages.MessageCreateParamsNonStreaming => ({
+      model,
+      max_tokens: maxTokens,
+      system:   anthropicSystemParam(),
+      tools,
+      messages: anthMsgs,
+      ...(includeThinking
+        ? { thinking: { type: 'enabled' as const, budget_tokens: 2048, display: 'summarized' as const } }
+        : {}),
+    })
+
+    let response: Awaited<ReturnType<typeof client.messages.create>>
+    try {
+      if (thinkingOn) {
+        response = await withTimeout(client.messages.create(base(true)), LLM_TIMEOUT_MS, 'Anthropic')
+      } else {
+        response = await withTimeout(client.messages.create(base(false)), LLM_TIMEOUT_MS, 'Anthropic')
+      }
+    } catch (e) {
+      if (thinkingOn && looksLikeThinkingUnsupported(e)) {
+        console.warn('[Agent] Anthropic extended thinking unavailable for this model; retrying without.')
+        response = await withTimeout(client.messages.create(base(false)), LLM_TIMEOUT_MS, 'Anthropic')
+      } else {
+        throw e
+      }
+    }
 
     const toolUses = response.content.filter((b): b is Anthropic.Messages.ToolUseBlock => b.type === 'tool_use')
     const textBlocks = response.content.filter((b): b is Anthropic.Messages.TextBlock => b.type === 'text')
@@ -362,7 +408,7 @@ async function runGemini(
       return { role, parts: [{ text: String(m.content ?? '') }] }
     })
 
-  const functionDeclarations = TOOLS.map(t => ({
+  const functionDeclarations = [...TOOLS, ...getMcpToolsForAnthropic()].map(t => ({
     name:        t.name,
     description: t.description,
     parameters:  t.input_schema,

@@ -8,64 +8,7 @@ import { PicovoiceWakeWord } from './voice/PicovoiceWakeWord'
 import { speakLocal, stopLocalSpeech, isSpeakingLocal } from './voice/LocalTTS'
 import { JarvizFSM, JarvizState } from './state/JarvizFSM'
 
-declare global {
-  interface Window {
-    jarviz: {
-      dragStart:  (x: number, y: number) => void
-      dragMove:   (x: number, y: number) => void
-      dragEnd:    () => void
-      onActivate: (cb: () => void) => () => void
-      log:        (msg: string) => void
-      orbResize:  (size: number) => void
-      orbGetSize: () => Promise<number>
-      setMini:    (on: boolean) => Promise<boolean>
-      getMini:    () => Promise<boolean>
-      primaryScreenSize: () => Promise<{ width: number; height: number; x: number; y: number }>
-      getWhisperModel: () => Promise<string>
-      installUpdate: () => Promise<boolean>
-      relayState:   (s: string) => void
-      relayCaption: (c: { phase: string; user: string; reply: string }) => void
-      panel: {
-        show: (section?: string) => void
-        hide: () => void
-      }
-      app: {
-        getJarvizEnabled: () => Promise<boolean>
-        setJarvizEnabled: (on: boolean) => Promise<boolean>
-        onJarvizSetEnabled: (cb: (enabled: boolean) => void) => () => void
-      }
-      onOpenSettings:    (cb: () => void) => () => void
-      onOpenTranscripts: (cb: () => void) => () => void
-      onMiniChanged:     (cb: (mini: boolean) => void) => () => void
-      onUpdaterStatus:   (cb: (s: { state: string; progress?: number; message?: string }) => void) => () => void
-      settings: {
-        get: () => Promise<{ envOverrides: Record<string, string>; llmBackend: string; whisperModel: string; wakeWordMode: 'phrases' | 'picovoice' }>
-        set: (patch: {
-          envOverrides?: Record<string, string>
-          llmBackend?: string
-          whisperModel?: string
-          wakeWordMode?: 'phrases' | 'picovoice'
-        }) => Promise<boolean>
-      }
-      transcripts: {
-        list:       () => Promise<Array<{ id: string; startedAt: number; endedAt: number; preview: string; turns: number }>>
-        get:        (id: string) => Promise<{ id: string; startedAt: number; endedAt: number; preview: string; turns: Array<{ role: string; text: string; ts: number }> } | null>
-        delete:     (id: string) => Promise<boolean>
-        clear:      () => Promise<boolean>
-        newSession: () => Promise<boolean>
-      }
-      agent: {
-        query:   (text: string) => Promise<{ text: string; audio: number[] | null; audioMime: string | null; streaming?: boolean }>
-        cancel:  () => void
-        onState: (cb: (state: string) => void) => () => void
-        onSpeakChunk: (cb: (chunk: { index: number; total: number; text: string; audio: number[] | null; audioMime: string | null; isFinal: boolean }) => void) => () => void
-      }
-      stt: {
-        whisperCppTranscribeWav: (wavBytes: number[]) => Promise<{ text: string }>
-      }
-    }
-  }
-}
+
 
 const rlog = (msg: string) => {
   console.log(msg)
@@ -520,7 +463,7 @@ export default function App() {
     if (fsm && fsm.state !== 'speaking') {
       const a = analyserRef.current; const f = fftRef.current
       if (a && f) {
-        a.getByteFrequencyData(f)
+        a.getByteFrequencyData(f as any)
         let s = 0; for (let i = 0; i < f.length; i++) s += f[i]
         sceneRef.current?.setAudioAmplitude((s / f.length) / 255)
       }

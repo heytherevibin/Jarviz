@@ -1,4 +1,11 @@
 /// <reference types="vite/client" />
+import type { JarvizAPI } from '../../preload/index'
+
+declare global {
+  interface Window {
+    jarviz: JarvizAPI
+  }
+}
 
 declare module '*.vert?raw' {
   const src: string

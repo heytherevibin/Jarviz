@@ -62,6 +62,8 @@ const jarviz = {
       platform: string; uptimeMs: number; envHasGeminiKey: boolean; envHasEmergentKey: boolean;
       envGeminiVoice: string; llmBackend: string; memoryMB: number;
     }> => ipcRenderer.invoke('panel:getDiagnostics'),
+    /** macOS: true after `electron-liquid-glass` attached to the framed Settings window (not the orb). */
+    getSettingsNativeLiquidGlass: (): Promise<boolean> => ipcRenderer.invoke('settings:getNativeLiquidGlass'),
     previewVoice: (voice: string): Promise<{ ok: boolean; error?: string }> =>
       ipcRenderer.invoke('panel:previewVoice', voice),
     onPreviewAudio: (cb: (a: { audio: number[]; mime: string }) => void) => sub('panel:previewAudio', cb),
@@ -73,6 +75,9 @@ const jarviz = {
       llmBackend: string
       whisperModel: string
       wakeWordMode: 'phrases' | 'picovoice'
+      allowDestructiveShell: boolean
+      anthropicThinking: boolean
+      mcpServers: unknown[]
     }> => ipcRenderer.invoke('settings:get'),
 
     set: (patch: {
@@ -80,6 +85,9 @@ const jarviz = {
       llmBackend?: string
       whisperModel?: string
       wakeWordMode?: 'phrases' | 'picovoice'
+      allowDestructiveShell?: boolean
+      anthropicThinking?: boolean
+      mcpServers?: unknown
     }): Promise<boolean> => ipcRenderer.invoke('settings:set', patch),
   },
 
@@ -137,16 +145,6 @@ const jarviz = {
   stt: {
     whisperCppTranscribeWav: (wavBytes: number[]): Promise<{ text: string }> =>
       invokeWithTimeout('stt:whispercpp:transcribeWav', { wavBytes }),
-  },
-
-  /** macOS tray popover only — uses same preload as orb/settings */
-  trayMenu: {
-    getEnabled: (): Promise<boolean> => ipcRenderer.invoke('app:getJarvizEnabled'),
-    setEnabled: (on: boolean): Promise<boolean> => ipcRenderer.invoke('app:setJarvizEnabled', on),
-    onEnabledFromMain: (cb: (enabled: boolean) => void) => sub<boolean>('jarviz:setEnabled', cb),
-    openSettings: (): void => { ipcRenderer.send('tray-menu:open-settings') },
-    quit: (): void => { ipcRenderer.send('tray-menu:quit') },
-    close: (): void => { ipcRenderer.send('tray-menu:close') },
   },
 }
 

@@ -34,9 +34,8 @@ export function mergeStoredEnv(store: Store): void {
       delete process.env[k]
     }
   }
-  // Apply any other (non-managed) overrides too
   for (const [k, v] of Object.entries(overrides)) {
-    if (ENV_KEYS_MANAGED.includes(k)) continue
+    if ((ENV_KEYS_MANAGED as readonly string[]).includes(k)) continue
     if (typeof v === 'string' && v.trim().length > 0) process.env[k] = v.trim()
   }
 
@@ -45,4 +44,14 @@ export function mergeStoredEnv(store: Store): void {
 
   const wm = store.get('whisperModel') as string | undefined
   if (typeof wm === 'string' && wm.trim()) process.env.WHISPER_MODEL = wm.trim()
+
+  if (store.get('agent.allowDestructiveShell', false) === true) {
+    process.env.JARVIZ_ALLOW_DESTRUCTIVE_SHELL = '1'
+  } else {
+    delete process.env.JARVIZ_ALLOW_DESTRUCTIVE_SHELL
+  }
+
+  if (store.get('agent.anthropicThinking', true) === false) {
+    process.env.ANTHROPIC_THINKING = '0'
+  }
 }

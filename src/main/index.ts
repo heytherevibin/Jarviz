@@ -6,14 +6,16 @@ import { join } from 'path'
 import { pathToFileURL } from 'node:url'
 config({ path: join(__dirname, '../../.env'), override: true })
 
-import { app, BrowserWindow, screen, ipcMain, globalShortcut, Tray, Menu, nativeImage, shell } from 'electron'
+import { app, BrowserWindow, screen, ipcMain, globalShortcut, Tray, Menu, nativeImage, shell, dialog } from 'electron'
 import Store from 'electron-store'
 import { spawn } from 'child_process'
 import { runAgent } from './agent/claude'
+import { mcpRefreshFromStore, parseMcpServers } from './agent/mcp-registry'
 import { streamSpeak, type SpeechChunk } from './agent/streaming'
 import { getEffectiveEnvOverrides, mergeStoredEnv } from './store-env'
 import { TranscriptStore } from './agent/transcript'
 import { setupAutoUpdater, quitAndInstallUpdate } from './updater'
+import { attachMacLiquidGlass } from './macLiquidGlass'
 import {
   initAgentContext,
   memoryList,
@@ -28,11 +30,27 @@ import {
 } from './agent/context'
 
 // ── Crash recovery — keep IPC alive on unexpected errors ─────────────────────
+function showMainProcessAlert(title: string, body: string): void {
+  const text = body.length > 2800 ? `${body.slice(0, 2800)}…` : body
+  void app.whenReady().then(() => {
+    try {
+      dialog.showErrorBox(title, text)
+    } catch {
+      /* headless / CI */
+    }
+  })
+}
 process.on('unhandledRejection', (reason) => {
   console.error('[Main] unhandled rejection:', reason)
+  if (app.isPackaged) {
+    showMainProcessAlert('Jarviz — background error', String(reason instanceof Error ? reason.stack || reason.message : reason))
+  }
 })
 process.on('uncaughtException', (err) => {
   console.error('[Main] uncaught exception:', err)
+  if (app.isPackaged) {
+    showMainProcessAlert('Jarviz — uncaught error', err.stack || err.message)
+  }
 })
 
 const store = new Store()
@@ -278,16 +296,6 @@ function registerMainProcessHandlers(): void {
   if (ipcRegistered) return
   ipcRegistered = true
 
-  ipcMain.on('tray-menu:open-settings', () => {
-    hideTrayPopover()
-    showSettingsWindow('keys')
-  })
-  ipcMain.on('tray-menu:quit', () => {
-    hideTrayPopover()
-    app.quit()
-  })
-  ipcMain.on('tray-menu:close', () => { hideTrayPopover() })
-
   ipcMain.on('drag:start', (_, { mouseX, mouseY }: { mouseX: number; mouseY: number }) => {
     if (!mainWindow) return
     const [wx, wy] = mainWindow.getPosition()
@@ -337,6 +345,9 @@ function registerMainProcessHandlers(): void {
     whisperModel: store.get('whisperModel', process.env.WHISPER_MODEL ?? 'base') as string,
     /** `phrases` = Silero VAD + Whisper ("hey jarviz", …). `picovoice` = Picovoice "Jarvis" keyword if key set. */
     wakeWordMode: (store.get('wakeWordMode') as 'phrases' | 'picovoice' | undefined) ?? 'phrases',
+    allowDestructiveShell: store.get('agent.allowDestructiveShell', false) === true,
+    anthropicThinking:     store.get('agent.anthropicThinking', true) !== false,
+    mcpServers:            (store.get('mcpServers', []) as unknown[]) ?? [],
   }))
 
   ipcMain.handle('settings:set', (
@@ -346,13 +357,26 @@ function registerMainProcessHandlers(): void {
       llmBackend?:   string
       whisperModel?: string
       wakeWordMode?: 'phrases' | 'picovoice'
+      allowDestructiveShell?: boolean
+      anthropicThinking?: boolean
+      mcpServers?: unknown
     },
   ) => {
     if (patch.envOverrides !== undefined) store.set('envOverrides', patch.envOverrides)
     if (patch.llmBackend !== undefined) store.set('llmBackend', patch.llmBackend)
     if (patch.whisperModel !== undefined) store.set('whisperModel', patch.whisperModel)
     if (patch.wakeWordMode !== undefined) store.set('wakeWordMode', patch.wakeWordMode)
+    if (patch.allowDestructiveShell !== undefined) store.set('agent.allowDestructiveShell', !!patch.allowDestructiveShell)
+    if (patch.anthropicThinking !== undefined) store.set('agent.anthropicThinking', !!patch.anthropicThinking)
+    if (patch.mcpServers !== undefined) {
+      const parsed = parseMcpServers(patch.mcpServers)
+      if (!parsed) return false
+      store.set('mcpServers', parsed)
+    }
     mergeStoredEnv(store)
+    if (patch.mcpServers !== undefined) {
+      void mcpRefreshFromStore(store).catch((e) => console.error('[MCP] refresh:', e))
+    }
     return true
   })
 
@@ -560,6 +584,8 @@ function registerMainProcessHandlers(): void {
   ipcMain.on('panel:hide',     () => hideSettingsWindow())
   ipcMain.handle('panel:toggle', () => { toggleSettingsWindow(); return true })
 
+  ipcMain.handle('settings:getNativeLiquidGlass', () => settingsLiquidGlassId >= 0)
+
   ipcMain.handle('panel:getDiagnostics', () => ({
     platform:           `${process.platform}-${process.arch}`,
     uptimeMs:           Math.round(process.uptime() * 1000),
@@ -722,13 +748,10 @@ function createWindow(): void {
 
 // ── Framed Settings window (not a menubar popover) ───────────────────────────
 let settingsWindow: BrowserWindow | null = null
-/** macOS: Klack-style tray UI (HTML switch) — Electron menus cannot host NSSwitch. */
-let trayPopoverWindow: BrowserWindow | null = null
+/** `-1` until `electron-liquid-glass` attaches on macOS settings load; used for renderer chrome split */
+let settingsLiquidGlassId = -1
 let appQuitting = false
-app.on('before-quit', () => {
-  appQuitting = true
-  hideTrayPopover()
-})
+app.on('before-quit', () => { appQuitting = true })
 
 const SETTINGS_W = 820
 const SETTINGS_H = 720
@@ -764,22 +787,52 @@ function createSettingsWindow(): void {
     show:           false,
     frame:          true,
     titleBarStyle:  isMac ? 'hiddenInset' : 'default',
-    trafficLightPosition: isMac ? { x: 16, y: 14 } : undefined,
+    /** Klack-style: traffic lights float on content chrome */
+    trafficLightPosition: isMac ? { x: 14, y: 14 } : undefined,
     resizable:      true,
     fullscreenable: false,
     skipTaskbar:    false,
     title:          'Jarviz',
-    // macOS: material behind content so the renderer can use translucent “liquid glass” stacks.
+    // macOS: transparent + optional `electron-liquid-glass` (do not set `vibrancy` with that path — README).
     backgroundColor: isMac ? '#00000000' : '#ececec',
     transparent:    isMac,
-    vibrancy:       isMac ? 'under-window' : undefined,
-    visualEffectState: isMac ? 'active' as const : undefined,
+    vibrancy:       undefined,
+    visualEffectState: undefined,
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false,
     },
+  })
+
+  if (isMac) {
+    try {
+      settingsWindow.setWindowButtonVisibility(true)
+    } catch {
+      /* Electron / OS version may omit API */
+    }
+  }
+
+  settingsWindow.webContents.once('did-finish-load', () => {
+    void (async (): Promise<void> => {
+      const win = settingsWindow
+      if (!win || win.isDestroyed()) return
+      if (process.platform !== 'darwin') return
+      const id = await attachMacLiquidGlass(win)
+      settingsLiquidGlassId = id
+      if (id < 0) {
+        try {
+          win.setVibrancy('sidebar')
+        } catch {
+          try {
+            win.setVibrancy('under-window')
+          } catch {
+            /* older Electron / non-mac */
+          }
+        }
+      }
+    })()
   })
 
   settingsWindow.on('close', (e) => {
@@ -793,6 +846,7 @@ function createSettingsWindow(): void {
 
   settingsWindow.on('closed', () => {
     settingsWindow = null
+    settingsLiquidGlassId = -1
   })
 }
 
@@ -818,8 +872,8 @@ function showSettingsWindow(section?: string): void {
       settingsWindow.webContents.send('panel:focus-section', section)
     }
     const arm = (): void => {
-      if (settingsWindow.webContents.isLoading()) {
-        settingsWindow.webContents.once('did-finish-load', send)
+      if (settingsWindow?.webContents.isLoading()) {
+        settingsWindow?.webContents.once('did-finish-load', send)
       } else {
         send()
       }
@@ -841,8 +895,6 @@ function syncJarvizEnabledToRenderer(): void {
     mainWindow.webContents.send('jarviz:setEnabled', jarvizEnabled)
   if (settingsWindow && !settingsWindow.isDestroyed())
     settingsWindow.webContents.send('jarviz:setEnabled', jarvizEnabled)
-  if (trayPopoverWindow && !trayPopoverWindow.isDestroyed())
-    trayPopoverWindow.webContents.send('jarviz:setEnabled', jarvizEnabled)
 }
 
 function applyOrbHiddenWhenDisabled(): void {
@@ -861,84 +913,6 @@ function setJarvizEnabled(on: boolean): void {
   setApplicationMenu()
 }
 
-const TRAY_POPOVER_W = 260
-const TRAY_POPOVER_H = 132
-
-function trayPopoverRendererUrl(): string {
-  const rendererHtml = join(__dirname, '../renderer/index.html')
-  const q = 'view=tray'
-  if (!app.isPackaged && process.env['ELECTRON_RENDERER_URL']) {
-    return `${process.env['ELECTRON_RENDERER_URL']}?${q}`
-  }
-  return `${pathToFileURL(rendererHtml).href}?${q}`
-}
-
-function hideTrayPopover(): void {
-  if (trayPopoverWindow && !trayPopoverWindow.isDestroyed()) trayPopoverWindow.hide()
-}
-
-function positionTrayPopoverWindow(): void {
-  if (!tray || !trayPopoverWindow || trayPopoverWindow.isDestroyed()) return
-  const tb = tray.getBounds()
-  const [ww] = trayPopoverWindow.getSize()
-  const { workArea } = screen.getDisplayNearestPoint({ x: tb.x, y: tb.y })
-  let x = Math.round(tb.x + tb.width / 2 - ww / 2)
-  const y = Math.round(tb.y + tb.height + 3)
-  x = Math.max(workArea.x + 8, Math.min(x, workArea.x + workArea.width - ww - 8))
-  trayPopoverWindow.setPosition(x, y)
-}
-
-function ensureTrayPopoverWindow(): void {
-  if (trayPopoverWindow && !trayPopoverWindow.isDestroyed()) return
-
-  trayPopoverWindow = new BrowserWindow({
-    width:              TRAY_POPOVER_W,
-    height:             TRAY_POPOVER_H,
-    frame:              false,
-    transparent:        true,
-    vibrancy:           'menu',
-    visualEffectState:  'active',
-    resizable:          false,
-    minimizable:        false,
-    maximizable:        false,
-    fullscreenable:     false,
-    skipTaskbar:        true,
-    alwaysOnTop:        true,
-    hasShadow:          true,
-    backgroundColor:    '#00000000',
-    show:               false,
-    webPreferences: {
-      preload:          join(__dirname, '../preload/index.js'),
-      contextIsolation: true,
-      nodeIntegration:    false,
-      sandbox:            false,
-    },
-  })
-
-  try {
-    trayPopoverWindow.setAlwaysOnTop(true, 'pop-up-menu')
-  } catch {
-    try { trayPopoverWindow.setAlwaysOnTop(true) } catch { /* noop */ }
-  }
-
-  trayPopoverWindow.loadURL(trayPopoverRendererUrl())
-  trayPopoverWindow.on('blur', () => { hideTrayPopover() })
-  trayPopoverWindow.on('closed', () => { trayPopoverWindow = null })
-}
-
-function toggleTrayPopover(): void {
-  if (!tray) return
-  ensureTrayPopoverWindow()
-  if (!trayPopoverWindow || trayPopoverWindow.isDestroyed()) return
-  if (trayPopoverWindow.isVisible()) {
-    hideTrayPopover()
-    return
-  }
-  positionTrayPopoverWindow()
-  trayPopoverWindow.show()
-  trayPopoverWindow.focus()
-}
-
 /** Shown as the first menu on macOS screen menu bar (Electron dev name is otherwise "Electron"). */
 const APP_TITLE = 'Jarviz'
 
@@ -955,8 +929,10 @@ function setApplicationMenu(): void {
         { role: 'about' },
         { type: 'separator' },
         {
-          label: jarvizEnabled ? 'Pause Jarviz' : 'Resume Jarviz',
-          click: () => { setJarvizEnabled(!jarvizEnabled) },
+          type:      'checkbox',
+          label:     'Jarviz is on',
+          checked:   jarvizEnabled,
+          click:     (item) => { setJarvizEnabled(!!item.checked) },
         },
         { type: 'separator' },
         { label: 'Settings…', accelerator: 'Command+,', click: () => { showSettingsWindow('keys') } },
@@ -969,8 +945,10 @@ function setApplicationMenu(): void {
       label: 'File',
       submenu: [
         {
-          label: jarvizEnabled ? 'Pause Jarviz' : 'Resume Jarviz',
-          click: () => { setJarvizEnabled(!jarvizEnabled) },
+          type:      'checkbox',
+          label:     'Jarviz is on',
+          checked:   jarvizEnabled,
+          click:     (item) => { setJarvizEnabled(!!item.checked) },
         },
         { type: 'separator' },
         {
@@ -1036,8 +1014,10 @@ function setApplicationMenu(): void {
 function buildTrayMenu(): Menu {
   return Menu.buildFromTemplate([
     {
-      label: jarvizEnabled ? 'Jarviz is on — click to pause' : 'Jarviz is off — click to resume',
-      click: () => { setJarvizEnabled(!jarvizEnabled) },
+      type:    'checkbox',
+      label:   'Jarviz is on',
+      checked: jarvizEnabled,
+      click:   (item) => { setJarvizEnabled(!!item.checked) },
     },
     { type: 'separator' },
     {
@@ -1070,10 +1050,6 @@ function createTray(): void {
       const now = Date.now()
       if (now - lastTrayMenuAt < TRAY_MENU_DEBOUNCE_MS) return
       lastTrayMenuAt = now
-      if (process.platform === 'darwin') {
-        toggleTrayPopover()
-        return
-      }
       tray.popUpContextMenu(buildTrayMenu())
     }
     tray.on('click', popup)
@@ -1088,60 +1064,94 @@ function createTray(): void {
 }
 
 app.whenReady().then(() => {
-  app.setAppUserModelId('com.jarviz.app')
   try {
-    app.setName(APP_TITLE)
-  } catch {
-    /* setName may vary by Electron build */
-  }
-
-  // macOS: run as a true menu-bar accessory app (no Dock icon).
-  if (process.platform === 'darwin') {
+    app.setAppUserModelId('com.jarviz.app')
     try {
-      // `setActivationPolicy` exists on macOS builds of Electron.
-      ;(app as unknown as { setActivationPolicy?: (p: 'regular' | 'accessory' | 'prohibited') => void })
-        .setActivationPolicy?.('accessory')
+      app.setName(APP_TITLE)
     } catch {
-      /* best-effort */
+      /* setName may vary by Electron build */
     }
-    try {
-      app.dock?.hide()
-    } catch {
-      /* best-effort */
-    }
-  }
 
-  tryAutoConfigureWhisperCpp()
-
-  // Restore most recent session if user re-opened within idle window
-  const restored = transcripts.restoreActive(SESSION_TIMEOUT_MS)
-  if (restored.length) {
-    conversationHistory = restored.map(t => ({ role: t.role, content: t.text })) as unknown[]
-    lastQueryAt = Date.now()
-    console.log(`[Main] restored ${restored.length} previous turns`)
-  }
-
-  // Restore mini-mode preference
-  miniMode = store.get('orb.miniMode', false) as boolean
-
-  applyLaunchAtLoginSetting()
-
-  jarvizEnabled = !!(store.get('app.jarvizEnabled', true) as boolean)
-
-  setApplicationMenu()
-  createTray()
-  createWindow()
-  if (miniMode && mainWindow) setMiniMode(true)
-  // Settings window is created lazily on first tray menu / shortcut open.
-  setupAutoUpdater(() => mainWindow)
-
-  app.on('activate', () => {
+    // macOS: stay a normal foreground app (Dock + Cmd-Tab). Pure accessory + LSUIElement
+    // made Jarviz look like "nothing opens" when the tray icon was easy to miss.
     if (process.platform === 'darwin') {
-      // Accessory app: no Dock tile; do not auto-open settings on activate.
-      return
+      try {
+        ;(app as unknown as { setActivationPolicy?: (p: 'regular' | 'accessory' | 'prohibited') => void })
+          .setActivationPolicy?.('regular')
+      } catch {
+        /* best-effort */
+      }
     }
-    if (BrowserWindow.getAllWindows().length === 0) createWindow()
-  })
+
+    tryAutoConfigureWhisperCpp()
+
+    // Restore most recent session if user re-opened within idle window
+    const restored = transcripts.restoreActive(SESSION_TIMEOUT_MS)
+    if (restored.length) {
+      conversationHistory = restored.map(t => ({ role: t.role, content: t.text })) as unknown[]
+      lastQueryAt = Date.now()
+      console.log(`[Main] restored ${restored.length} previous turns`)
+    }
+
+    // Restore mini-mode preference
+    miniMode = store.get('orb.miniMode', false) as boolean
+
+    applyLaunchAtLoginSetting()
+
+    jarvizEnabled = !!(store.get('app.jarvizEnabled', true) as boolean)
+
+    setApplicationMenu()
+    createTray()
+    createWindow()
+    if (miniMode && mainWindow) setMiniMode(true)
+
+    // MCP: defer until app is ready (stdio transports spawn children; doing this at import
+    // time could race Electron init and made packaged builds feel "dead on launch").
+    void mcpRefreshFromStore(store).catch((e) => console.error('[MCP] startup:', e))
+
+    // First packaged launch: open Settings once the window can paint (avoids blank flash / lost focus).
+    if (process.platform === 'darwin' && app.isPackaged) {
+      const key = 'app.firstLaunchPresented'
+      if (!store.get(key, false)) {
+        createSettingsWindow()
+        const w = settingsWindow
+        if (w && !w.isDestroyed()) {
+          const markDone = (): void => {
+            if (store.get(key, false)) return
+            store.set(key, true)
+          }
+          w.once('ready-to-show', () => {
+            centerSettingsWindow()
+            w.show()
+            w.focus()
+            markDone()
+          })
+          w.webContents.once('did-fail-load', (_e, code, desc) => {
+            console.error('[Main] settings did-fail-load', code, desc)
+            markDone()
+          })
+        } else {
+          store.set(key, true)
+        }
+      }
+    }
+
+    // Settings window is created lazily on first tray menu / shortcut open.
+    setupAutoUpdater(() => mainWindow)
+
+    app.on('activate', () => {
+      if (BrowserWindow.getAllWindows().length === 0) createWindow()
+    })
+  } catch (err) {
+    console.error('[Main] whenReady failed:', err)
+    const msg = err instanceof Error ? err.stack || err.message : String(err)
+    try {
+      dialog.showErrorBox('Jarviz — could not start', msg)
+    } catch {
+      /* noop */
+    }
+    app.quit()
+  }
 })
 
 app.on('window-all-closed', () => {

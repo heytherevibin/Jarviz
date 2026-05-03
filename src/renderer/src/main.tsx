@@ -2,7 +2,6 @@ import React from 'react'
 import ReactDOM from 'react-dom/client'
 import App from './App'
 import { PanelView } from './PanelView'
-import { TrayPopoverView } from './TrayPopoverView'
 
 // NOTE: StrictMode disabled — it double-mounts effects in dev which doubled
 // our mic streams, VAD instances, and Whisper loads. Causes audible/visual glitches.
@@ -14,8 +13,6 @@ const view   = params.get('view')
 const root = ReactDOM.createRoot(document.getElementById('root')!)
 if (view === 'settings' || view === 'panel') {
   root.render(<PanelView />)
-} else if (view === 'tray') {
-  root.render(<TrayPopoverView />)
 } else {
   root.render(<App />)
 }
