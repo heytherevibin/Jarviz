@@ -7,7 +7,6 @@ import { LocalWakeWord } from './voice/LocalWakeWord'
 import { PicovoiceWakeWord } from './voice/PicovoiceWakeWord'
 import { speakLocal, stopLocalSpeech, isSpeakingLocal } from './voice/LocalTTS'
 import { JarvizFSM, JarvizState } from './state/JarvizFSM'
-import { HUDLayer } from './HUDLayer'
 
 declare global {
   interface Window {
@@ -24,16 +23,28 @@ declare global {
       primaryScreenSize: () => Promise<{ width: number; height: number; x: number; y: number }>
       getWhisperModel: () => Promise<string>
       installUpdate: () => Promise<boolean>
+      relayState:   (s: string) => void
+      relayCaption: (c: { phase: string; user: string; reply: string }) => void
+      panel: {
+        show: (section?: string) => void
+        hide: () => void
+      }
+      app: {
+        getJarvizEnabled: () => Promise<boolean>
+        setJarvizEnabled: (on: boolean) => Promise<boolean>
+        onJarvizSetEnabled: (cb: (enabled: boolean) => void) => () => void
+      }
       onOpenSettings:    (cb: () => void) => () => void
       onOpenTranscripts: (cb: () => void) => () => void
       onMiniChanged:     (cb: (mini: boolean) => void) => () => void
       onUpdaterStatus:   (cb: (s: { state: string; progress?: number; message?: string }) => void) => () => void
       settings: {
-        get: () => Promise<{ envOverrides: Record<string, string>; llmBackend: string; whisperModel: string }>
+        get: () => Promise<{ envOverrides: Record<string, string>; llmBackend: string; whisperModel: string; wakeWordMode: 'phrases' | 'picovoice' }>
         set: (patch: {
           envOverrides?: Record<string, string>
           llmBackend?: string
           whisperModel?: string
+          wakeWordMode?: 'phrases' | 'picovoice'
         }) => Promise<boolean>
       }
       transcripts: {
@@ -48,6 +59,9 @@ declare global {
         cancel:  () => void
         onState: (cb: (state: string) => void) => () => void
         onSpeakChunk: (cb: (chunk: { index: number; total: number; text: string; audio: number[] | null; audioMime: string | null; isFinal: boolean }) => void) => () => void
+      }
+      stt: {
+        whisperCppTranscribeWav: (wavBytes: number[]) => Promise<{ text: string }>
       }
     }
   }
@@ -367,6 +381,7 @@ class StreamingPlayer {
   private current: { stop: () => void } | null = null
   private webSpeechCleanup: (() => void) | null = null
   private finalEnqueued = false
+  private sawAudio = false
 
   constructor(
     private setAmp:  (v: number) => void,
@@ -396,9 +411,18 @@ class StreamingPlayer {
     const onChunkEnd = (): void => { this.current = null; this.playNext() }
 
     if (next.audio && next.audio.length > 0) {
+      this.sawAudio = true
       this.current = playAudioReactive(next.audio, next.mime || 'audio/mpeg', this.setAmp, onChunkEnd)
     } else {
-      // No audio bytes — fall back to browser speech for this chunk so the user still hears it
+      // If we're already playing real audio for this reply, don't mix voices by falling back to Web Speech.
+      // Instead, advance after an estimated duration so follow-up timing stays natural.
+      if (this.sawAudio) {
+        const words = next.text.trim().split(/\s+/).filter(Boolean).length
+        const ms = Math.max(200, Math.min(3000, Math.round((words / 2.8) * 1000)))
+        window.setTimeout(onChunkEnd, ms)
+        return
+      }
+      // No audio bytes and no TTS backend configured — use Web Speech consistently for the whole reply.
       const env = startSpeechEnvelope(this.setAmp)
       this.webSpeechCleanup = () => { env(); stopLocalSpeech() }
       speakLocal(next.text, () => { env(); this.webSpeechCleanup = null; onChunkEnd() })
@@ -446,9 +470,10 @@ export default function App() {
 
   const [caption, setCaption] = useState({ phase: 'Ready', user: '', reply: '' })
   const [updateBanner, setUpdateBanner] = useState<{ state: string; progress?: number; message?: string } | null>(null)
-  const [hudState, setHudState] = useState<JarvizState>('idle')
   const [hudAmp, setHudAmp]   = useState(0)
-  const [shellSize, setShellSize] = useState({ w: 360, h: 360 })
+  const hudAmpRef = useRef(0)
+  const hudAmpRafRef = useRef<number | null>(null)
+  const lastHudAmpCommitRef = useRef(0)
   const [bootTs] = useState(() => Date.now())
   const [uptime, setUptime] = useState(0)
 
@@ -473,8 +498,20 @@ export default function App() {
   }, [])
 
   const setOrbAmp = useCallback((v: number) => {
+    // Keep the orb shader/audio reactive path fully real-time.
     sceneRef.current?.setAudioAmplitude(v)
-    setHudAmp(prev => prev * 0.78 + v * 0.22)
+
+    // Avoid per-frame React re-renders (can stutter WebGL in Electron).
+    // Smooth in a ref, then commit to state at ~30fps.
+    hudAmpRef.current = hudAmpRef.current * 0.78 + v * 0.22
+    if (hudAmpRafRef.current != null) return
+    hudAmpRafRef.current = requestAnimationFrame(() => {
+      hudAmpRafRef.current = null
+      const now = performance.now()
+      if (now - lastHudAmpCommitRef.current < 33) return
+      lastHudAmpCommitRef.current = now
+      setHudAmp(hudAmpRef.current)
+    })
   }, [])
 
   // Mic-driven idle amplitude (muted during speaking via FSM state check)
@@ -494,6 +531,7 @@ export default function App() {
   // ── Phase handlers — triggered by FSM state transitions ────────────────────
 
   const handleListening = useCallback(async (fsm: JarvizFSM) => {
+    await wakeWordRef.current?.pause().catch(() => {})
     const isFollowUp = fsm.context.turnCount > 0
     const wakeCommand = fsm.context.wakeCommand
 
@@ -560,6 +598,7 @@ export default function App() {
     const onDone = () => {
       stopPlaybackRef.current = null
       streamingPlayerRef.current = null
+      if (fsm.state !== 'speaking') return
       rlog('[Speaking] done — entering follow-up')
       fsm.send({ type: 'SPEECH_DONE' })
     }
@@ -622,7 +661,6 @@ export default function App() {
     fsm.subscribe((newState, oldState, event, ctx) => {
       rlog(`[FSM] ${oldState} → ${newState} (${event.type})`)
 
-      setHudState(newState)
       // Forward state + caption to main process so the menubar panel can mirror them
       relayState(newState)
 
@@ -652,12 +690,15 @@ export default function App() {
       }
       if (oldState === 'speaking') {
         setOrbAmp(0)
-        if (event.type === 'INTERRUPTED') {
+        if (event.type === 'INTERRUPTED' || event.type === 'WAKE_WORD' || event.type === 'ACTIVATE') {
           stopLocalSpeech()
+          streamingPlayerRef.current?.stop()
+          streamingPlayerRef.current = null
           if (stopPlaybackRef.current) {
             stopPlaybackRef.current()
             stopPlaybackRef.current = null
           }
+          window.jarviz?.agent?.cancel()
         }
       }
       if (oldState === 'followUp' && followUpTimerRef.current) {
@@ -676,16 +717,15 @@ export default function App() {
             stopPlaybackRef.current = null
           }
           wakeWordRef.current?.setEchoSuppression(false)
-          wakeWordRef.current?.resume().catch(() => {})
+          wakeWordRef.current?.resume().catch(e => rlog(`[WakeWord] resume error: ${e}`))
           if (oldState !== 'idle' && oldState !== 'followUp' && oldState !== 'error') {
             sound.dismiss()
           }
           break
 
         case 'listening':
-          if (oldState === 'idle') sound.activation()
+          if (oldState === 'idle' || oldState === 'speaking') sound.activation()
           wakeWordRef.current?.setEchoSuppression(false)
-          wakeWordRef.current?.pause().catch(() => {})
           handleListening(fsm)
           break
 
@@ -708,10 +748,12 @@ export default function App() {
         case 'speaking':
           sound.stopThinking()
           wakeWordRef.current?.setEchoSuppression(true)
+          wakeWordRef.current?.resume().catch(e => rlog(`[WakeWord] resume error: ${e}`))
           handleSpeaking(fsm)
           break
 
         case 'followUp':
+          wakeWordRef.current?.setEchoSuppression(false)
           handleFollowUp(fsm)
           break
 
@@ -752,10 +794,10 @@ export default function App() {
     if (idleLoad) idleLoad(kickoffWhisper)
     else setTimeout(kickoffWhisper, 1500)
 
-    // ── Wake word ────────────────────────────────────────────────────────────
+    // ── Wake word (VAD + Whisper phrases) then optional Picovoice ─────────────
     const ww = new LocalWakeWord()
     wakeWordRef.current = ww
-    ww.start(
+    void ww.start(
       async (command) => {
         rlog(`[WakeWord] triggered — command: "${command}"`)
         await ww.pause().catch(() => {})
@@ -766,14 +808,23 @@ export default function App() {
       },
       undefined,
       () => { if (fsm.state === 'idle') scene.setState('idle') },
-    ).then(ok => rlog(`[WakeWord] VAD started: ${ok}`))
-
-    // ── Picovoice Porcupine (opt-in, swaps in when access key is set) ───────
-    void (async () => {
+    ).then(async (vadOk) => {
+      rlog(`[WakeWord] VAD started: ${vadOk}`)
+      if (!vadOk) {
+        rlog('[WakeWord] Silero VAD did not start — check mic permission and the renderer console (VAD assets must load from the same folder as index.html).')
+        return
+      }
       try {
         const settings = await window.jarviz.settings.get()
-        const accessKey = settings.envOverrides?.PICOVOICE_ACCESS_KEY
-        if (!accessKey) return
+        if (settings.wakeWordMode !== 'picovoice') {
+          rlog('[WakeWord] Picovoice disabled — using phrase wake (“hey jarviz”, …). Change in Setup → Wake word if you want Picovoice.')
+          return
+        }
+        const accessKey = settings.envOverrides?.PICOVOICE_ACCESS_KEY?.trim()
+        if (!accessKey) {
+          rlog('[WakeWord] Picovoice selected but PICOVOICE_ACCESS_KEY is empty — add key in Setup or switch to Phrases.')
+          return
+        }
         const pico = new PicovoiceWakeWord()
         const ok = await pico.start(accessKey, () => {
           rlog('[Picovoice] wake!')
@@ -781,24 +832,55 @@ export default function App() {
         })
         if (ok) {
           picoRef.current = pico
-          // Pause the heavier VAD+Whisper path; Porcupine handles wake from now on
           await ww.pause().catch(() => {})
-          rlog('[Picovoice] active — VAD wake word paused')
+          rlog('[Picovoice] active — say "Jarvis" / VAD+Whisper wake paused')
+        } else {
+          rlog('[Picovoice] init failed — using VAD + Whisper wake phrases (e.g. "hey jarviz")')
         }
       } catch (e) {
         rlog(`[Picovoice] init error: ${(e as Error).message}`)
       }
-    })()
+    })
 
     // ── External triggers ────────────────────────────────────────────────────
+    const applyJarvizEnabledFromMain = (enabled: boolean): void => {
+      if (!enabled) {
+        void wakeWordRef.current?.pause().catch(() => {})
+        void picoRef.current?.pause().catch(() => {})
+        if (fsm.state === 'error') fsm.send({ type: 'ERROR_DISMISS' })
+        else if (fsm.state !== 'idle') fsm.send({ type: 'INTERRUPTED' })
+        window.jarviz?.agent?.cancel()
+        stopLocalSpeech()
+        streamingPlayerRef.current?.stop()
+        streamingPlayerRef.current = null
+        if (stopPlaybackRef.current) {
+          stopPlaybackRef.current()
+          stopPlaybackRef.current = null
+        }
+        sound.stopThinking()
+        setOrbAmp(0)
+      } else {
+        void wakeWordRef.current?.resume().catch(() => {})
+        void picoRef.current?.resume().catch(() => {})
+      }
+    }
+
     const removeActivate = window.jarviz?.onActivate(() => {
-      wakeWordRef.current?.pause().catch(() => {})
-      fsm.send({ type: 'ACTIVATE' })
+      void window.jarviz?.app?.getJarvizEnabled?.().then((on) => {
+        if (on === false) return
+        void wakeWordRef.current?.pause().catch(() => {})
+        fsm.send({ type: 'ACTIVATE' })
+      }).catch(() => { /* if IPC missing, do not activate */ })
     })
+
+    const removeJarvizSetEnabled = window.jarviz?.app?.onJarvizSetEnabled?.((enabled) => {
+      applyJarvizEnabledFromMain(enabled)
+    })
+    void window.jarviz?.app?.getJarvizEnabled?.().then(applyJarvizEnabledFromMain).catch(() => {})
 
     // Settings + Transcripts now live in the menubar panel — orb window stays clean
     const removeOpenSettings = window.jarviz?.onOpenSettings(() => {
-      window.jarviz?.panel?.show?.('settings')
+      window.jarviz?.panel?.show?.('keys')
     })
 
     const removeOpenTranscripts = window.jarviz?.onOpenTranscripts(() => {
@@ -861,6 +943,7 @@ export default function App() {
       picoRef.current?.stop()
       AudioManager.shared().dispose()
       removeActivate?.()
+      removeJarvizSetEnabled?.()
       removeOpenSettings?.()
       removeOpenTranscripts?.()
       removeUpdaterStatus?.()
@@ -912,12 +995,7 @@ export default function App() {
   }, [])
 
   useEffect(() => {
-    const onResize = (): void => {
-      setShellSize({ w: window.innerWidth, h: window.innerHeight })
-    }
-    onResize()
-    window.addEventListener('resize', onResize)
-    return () => window.removeEventListener('resize', onResize)
+    return
   }, [])
 
   useEffect(() => {
@@ -980,11 +1058,6 @@ export default function App() {
       onMouseLeave={() => { if (mouseDownPos.current) { window.jarviz?.dragEnd(); mouseDownPos.current = null } }}
     >
       <canvas ref={canvasRef} style={canvasStyle} />
-      <HUDLayer
-        state={hudState}
-        size={Math.min(shellSize.w, shellSize.h)}
-        amp={hudAmp}
-      />
     </div>
   )
 }

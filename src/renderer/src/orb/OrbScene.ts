@@ -40,7 +40,7 @@ const S: Record<OrbState, StateConfig> = {
     noiseScale: 0.85, displacement: 0.022, turbulence: 0.0, warpStrength: 0.12,
     fresnelPower: 3.6, rimIntensity: 0.78, sssStrength: 0.35,
     chromaticStr: 0.30, iridStr: 0.22, causticStr: 0.22,
-    gradientSpeed: 0.35, sparkle: 0.08, audioMult: 1.0,
+    gradientSpeed: 0.28, sparkle: 0.05, audioMult: 1.0,
     scale: 1.00,
     glowTightScale: 1.10, glowTightOpacity: 0.28,
     glowMedScale:   1.22, glowMedOpacity:   0.12,
@@ -53,7 +53,7 @@ const S: Record<OrbState, StateConfig> = {
     noiseScale: 1.00, displacement: 0.045, turbulence: 0.2, warpStrength: 0.25,
     fresnelPower: 2.8, rimIntensity: 0.95, sssStrength: 0.55,
     chromaticStr: 0.55, iridStr: 0.28, causticStr: 0.50,
-    gradientSpeed: 0.8, sparkle: 0.30, audioMult: 1.5,
+    gradientSpeed: 0.72, sparkle: 0.26, audioMult: 1.5,
     scale: 1.03,
     glowTightScale: 1.12, glowTightOpacity: 0.40,
     glowMedScale:   1.24, glowMedOpacity:   0.16,
@@ -66,7 +66,7 @@ const S: Record<OrbState, StateConfig> = {
     noiseScale: 1.20, displacement: 0.058, turbulence: 0.6, warpStrength: 0.40,
     fresnelPower: 2.4, rimIntensity: 0.95, sssStrength: 0.48,
     chromaticStr: 0.52, iridStr: 0.25, causticStr: 0.55,
-    gradientSpeed: 1.2, sparkle: 0.45, audioMult: 1.2,
+    gradientSpeed: 1.05, sparkle: 0.38, audioMult: 1.2,
     scale: 1.02,
     glowTightScale: 1.12, glowTightOpacity: 0.38,
     glowMedScale:   1.25, glowMedOpacity:   0.16,
@@ -79,7 +79,7 @@ const S: Record<OrbState, StateConfig> = {
     noiseScale: 0.95, displacement: 0.040, turbulence: 0.3, warpStrength: 0.28,
     fresnelPower: 2.6, rimIntensity: 0.90, sssStrength: 0.50,
     chromaticStr: 0.45, iridStr: 0.20, causticStr: 0.45,
-    gradientSpeed: 1.0, sparkle: 0.35, audioMult: 1.0,
+    gradientSpeed: 0.92, sparkle: 0.30, audioMult: 1.0,
     scale: 1.02,
     glowTightScale: 1.11, glowTightOpacity: 0.34,
     glowMedScale:   1.23, glowMedOpacity:   0.14,
@@ -92,7 +92,7 @@ const S: Record<OrbState, StateConfig> = {
     noiseScale: 0.90, displacement: 0.055, turbulence: 0.25, warpStrength: 0.24,
     fresnelPower: 3.0, rimIntensity: 0.90, sssStrength: 0.52,
     chromaticStr: 0.48, iridStr: 0.20, causticStr: 0.48,
-    gradientSpeed: 1.5, sparkle: 0.50, audioMult: 2.5,
+    gradientSpeed: 1.32, sparkle: 0.42, audioMult: 2.5,
     scale: 1.03,
     glowTightScale: 1.12, glowTightOpacity: 0.36,
     glowMedScale:   1.24, glowMedOpacity:   0.15,
@@ -105,7 +105,7 @@ const S: Record<OrbState, StateConfig> = {
     noiseScale: 1.40, displacement: 0.075, turbulence: 1.0, warpStrength: 0.50,
     fresnelPower: 1.8, rimIntensity: 1.10, sssStrength: 0.55,
     chromaticStr: 0.55, iridStr: 0.10, causticStr: 0.60,
-    gradientSpeed: 2.0, sparkle: 0.60, audioMult: 2.0,
+    gradientSpeed: 1.75, sparkle: 0.52, audioMult: 2.0,
     scale: 1.05,
     glowTightScale: 1.14, glowTightOpacity: 0.46,
     glowMedScale:   1.28, glowMedOpacity:   0.20,
@@ -166,6 +166,7 @@ export class OrbScene {
   private renderer:  THREE.WebGLRenderer
   private scene:     THREE.Scene
   private camera:    THREE.PerspectiveCamera
+  private scrim:     THREE.Mesh
   private orbGroup:  THREE.Group
   private orb:       THREE.Mesh
   private glowTight: THREE.Mesh
@@ -222,9 +223,12 @@ export class OrbScene {
       canvas,
       alpha:           true,
       antialias:       true,
+      premultipliedAlpha: false,
       powerPreference: 'high-performance',
     })
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 3))
+    // Keep orb window transparent (Siri-like). We handle compositor bleed-through
+    // by ensuring other translucent windows are destroyed when hidden.
     this.renderer.setClearColor(0x000000, 0)
     this.renderer.autoClear = false
 
@@ -262,6 +266,65 @@ export class OrbScene {
       uAudioReactive:    { value: 0 },
     }
 
+    // Circular-only vignette drawn in WebGL:
+    // - alpha=0 outside circle → window stays “only orb”
+    // - tint matches the orb colors so it feels like an extension, not a gray ring
+    // - keep radius close to the orb to avoid touching viewport bounds (no flat edges)
+    const SCRIM_VERT = `
+      varying vec2 vUv;
+      void main() {
+        vUv = uv;
+        gl_Position = vec4(position.xy, 0.0, 1.0);
+      }
+    `
+    const SCRIM_FRAG = `
+      precision highp float;
+      varying vec2 vUv;
+      uniform vec3 uColorA;
+      uniform vec3 uColorB;
+      uniform vec3 uColorC;
+      uniform float uTime;
+      uniform float uGradientSpeed;
+      void main() {
+        vec2 p = vUv * 2.0 - 1.0; // -1..1
+        float d = length(p);
+
+        // Single smooth falloff (no “inner ring / outer ring” banding).
+        // d=0 → full glow, d≈r0 → ~0 alpha
+        float r0 = 0.52;
+        float softness = 0.18;
+        float a = smoothstep(r0, r0 - softness, d); // 1 near center, 0 near edge
+
+        // Color extension: slowly drift between the orb palette
+        float t = sin(uTime * (0.10 + uGradientSpeed * 0.06)) * 0.5 + 0.5;
+        vec3 col = mix(mix(uColorA, uColorB, 0.55), uColorC, t);
+
+        float alpha = 0.42 * a;
+        gl_FragColor = vec4(col, alpha);
+      }
+    `
+    this.scrim = new THREE.Mesh(
+      new THREE.PlaneGeometry(2, 2, 1, 1),
+      new THREE.ShaderMaterial({
+        vertexShader: SCRIM_VERT,
+        fragmentShader: SCRIM_FRAG,
+        uniforms: {
+          uColorA: this.uniforms.uColorA,
+          uColorB: this.uniforms.uColorB,
+          uColorC: this.uniforms.uColorC,
+          uTime: this.uniforms.uTime,
+          uGradientSpeed: this.uniforms.uGradientSpeed,
+        },
+        transparent: true,
+        depthWrite: false,
+        depthTest: false,
+        blending: THREE.NormalBlending,
+        toneMapped: false,
+      }),
+    )
+    this.scrim.renderOrder = -100
+    this.scene.add(this.scrim)
+
     this.orb = new THREE.Mesh(orbGeo, new THREE.ShaderMaterial({
       vertexShader, fragmentShader,
       uniforms:    this.uniforms,
@@ -286,8 +349,10 @@ export class OrbScene {
     this.glowWide.renderOrder  = 0
     this.glowMed.renderOrder   = 1
     this.glowTight.renderOrder  = 2
-
-    this.orbGroup.add(this.glowWide, this.glowMed, this.glowTight)
+    // Remove glow shells (they can read as a broken outer ring on some displays).
+    this.glowWide.visible = false
+    this.glowMed.visible = false
+    this.glowTight.visible = false
 
     this.particles = new ParticleField(this.orbGroup)
 
@@ -385,6 +450,9 @@ export class OrbScene {
       const dt      = this.clock.getDelta()
       const elapsed = this.clock.elapsedTime
       this.tick(dt, elapsed)
+      // Always clear the full drawing buffer. In transparent Electron windows on macOS,
+      // failing to fully clear can leave "stale" GPU pixels that look like ghost rectangles.
+      this.renderer.setClearColor(0x000000, 0)
       this.renderer.clear(true, true, true)
       this.renderer.render(this.scene, this.camera)
     }
@@ -411,6 +479,7 @@ export class OrbScene {
     disposeMesh(this.glowMed)
     disposeMesh(this.glowTight)
     disposeMesh(this.orb)
+    disposeMesh(this.scrim)
 
     this.scene.remove(this.orbGroup)
     this.renderer.dispose()

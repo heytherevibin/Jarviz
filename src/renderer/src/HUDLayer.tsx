@@ -6,7 +6,6 @@ import type { JarvizState } from './state/JarvizFSM'
  * Minimalist & futuristic — no concentric rings circling the orb.
  *   • soft state-color radial halo
  *   • audio-reactive scan ring (single, ephemeral)
- *   • 4 quadrant reticle pips (orbiting, slow)
  *   • vertical scan beam (sweeps during listen/think/speak)
  *   • subtle perimeter tick marks
  */
@@ -32,10 +31,9 @@ interface Props {
 
 export function HUDLayer({ state, size, amp }: Props) {
   const accent = STATE_ACCENT[state] ?? '#8AB4F8'
-  const reticleRef = useRef<SVGGElement>(null)
-  const scanRef    = useRef<SVGLineElement>(null)
+  const scanRef = useRef<SVGLineElement>(null)
 
-  // Independent rotation for the 4 reticle pips + horizontal sweep for scan beam
+  // Horizontal sweep for the vertical scan beam (active states only)
   useEffect(() => {
     let raf = 0
     let phase = 0
@@ -44,7 +42,6 @@ export function HUDLayer({ state, size, amp }: Props) {
     }
     const tick = (): void => {
       phase += speedByState[state] ?? 0.10
-      if (reticleRef.current) reticleRef.current.style.transform = `rotate(${phase}deg)`
       if (scanRef.current && ACTIVE_STATES.has(state as JarvizState)) {
         const t = (phase * 0.6) % 200 / 200 // 0..1
         const x = (t < 0.5 ? t * 2 : (1 - t) * 2) // ping-pong 0..1
@@ -95,7 +92,7 @@ export function HUDLayer({ state, size, amp }: Props) {
         pointerEvents: 'none',
         zIndex:     1,
         overflow:   'visible',
-        filter:     `drop-shadow(0 0 26px ${accent}33)`,
+        // No outer halo / ring of any kind.
       }}
     >
       <defs>
@@ -111,9 +108,6 @@ export function HUDLayer({ state, size, amp }: Props) {
         </linearGradient>
       </defs>
 
-      {/* Soft halo behind the orb */}
-      <circle cx={cx} cy={cy} r={rPip * 1.18} fill="url(#hud-glow)" />
-
       {/* Vertical scan beam (visible only in active states) */}
       <line
         ref={scanRef}
@@ -123,39 +117,7 @@ export function HUDLayer({ state, size, amp }: Props) {
         style={{ opacity: 0, transition: 'opacity 0.5s' }}
       />
 
-      {/* Tick marks (sparse, only at major + half-major positions) */}
-      {ticks.map(t => (
-        <line
-          key={t.key}
-          x1={t.x1} y1={t.y1} x2={t.x2} y2={t.y2}
-          stroke={accent}
-          strokeOpacity={t.major ? 0.65 : 0.20}
-          strokeWidth={t.major ? 1.6 : 0.8}
-          strokeLinecap="round"
-        />
-      ))}
-
-      {/* Audio-reactive scan ring */}
-      <circle
-        cx={cx} cy={cy} r={scanR}
-        stroke={accent} strokeOpacity={scanOpacity}
-        strokeWidth={1} fill="none"
-      />
-
-      {/* 4 quadrant reticle pips that orbit slowly */}
-      <g ref={reticleRef} style={{ transformOrigin: `${cx}px ${cy}px` }}>
-        {[0, 90, 180, 270].map(deg => {
-          const a = (deg * Math.PI) / 180
-          const px = cx + Math.cos(a) * rPip
-          const py = cy + Math.sin(a) * rPip
-          return (
-            <g key={deg}>
-              <circle cx={px} cy={py} r={3.2} fill={accent} fillOpacity={0.95} />
-              <circle cx={px} cy={py} r={6.5} fill="none"   stroke={accent} strokeOpacity={0.30} />
-            </g>
-          )
-        })}
-      </g>
+      {/* Outer ring removed (no perimeter ticks / scan circle). */}
     </svg>
   )
 }

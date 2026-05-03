@@ -66,6 +66,9 @@ const TRANSITIONS: Record<JarvizState, TransitionMap> = {
   speaking: {
     SPEECH_DONE: { target: 'followUp' },
     INTERRUPTED: { target: 'idle' },
+    /** Barge-in: stop TTS and listen (same as Siri interrupt). */
+    WAKE_WORD: { target: 'listening' },
+    ACTIVATE:  { target: 'listening' },
   },
   followUp: {
     ACTIVATE:           { target: 'listening' },

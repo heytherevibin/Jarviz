@@ -62,6 +62,11 @@
         "dmg",
         "zip"
       ],
+      "extendInfo": {
+        "LSUIElement": true,
+        "NSMicrophoneUsageDescription": "Jarviz listens for wake word and voice commands.",
+        "NSUserNotificationUsageDescription": "Jarviz can notify you about important events."
+      },
       "hardenedRuntime": true,
       "entitlements": "build/entitlements.mac.plist",
       "entitlementsInherit": "build/entitlements.mac.plist"

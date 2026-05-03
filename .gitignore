@@ -9,6 +9,8 @@ coverage
 node_modules/
 dist/
 out/
+# Generated from node_modules/onnxruntime-web by Vite (see electron.vite.config.ts)
+src/renderer/public/onnx-wasm/
 .env
 .env.local
 *.log

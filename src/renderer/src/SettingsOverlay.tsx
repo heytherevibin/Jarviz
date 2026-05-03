@@ -39,7 +39,7 @@ const ENV_KEY_HINTS: Record<string, string> = {
   XAI_API_KEY:         'xAI Grok (console.x.ai).',
   TAVILY_API_KEY:      'Optional — richer web search results.',
   ELEVENLABS_API_KEY:  'Optional — premium voice output.',
-  PICOVOICE_ACCESS_KEY:'Optional — efficient hardware-grade "Jarvis" wake word (console.picovoice.ai).',
+  PICOVOICE_ACCESS_KEY:'Only when wake engine = Picovoice in panel settings. Phrase wake needs no Picovoice key.',
 }
 
 const PROVIDER_MODELS: Record<string, { value: string; label: string }[]> = {
@@ -72,6 +72,7 @@ export function SettingsOverlay({ open, onClose }: Props) {
   const [emergentProvider, setEmergentProvider] = useState('anthropic')
   const [emergentModel, setEmergentModel] = useState('claude-sonnet-4-5-20250929')
   const [whisperModel, setWhisperModel] = useState('base')
+  const [wakeWordMode, setWakeWordMode] = useState<'phrases' | 'picovoice'>('phrases')
   const [geminiVoice, setGeminiVoice] = useState('Aoede')
   const [keys, setKeys] = useState<Record<string, string>>({})
   const [saved, setSaved] = useState(false)
@@ -85,6 +86,7 @@ export function SettingsOverlay({ open, onClose }: Props) {
     ]).then(([s, mini]) => {
       setLlmBackend(s.llmBackend || 'emergent')
       setWhisperModel(s.whisperModel || 'base')
+      setWakeWordMode(s.wakeWordMode === 'picovoice' ? 'picovoice' : 'phrases')
       setKeys({ ...s.envOverrides })
       setEmergentProvider(s.envOverrides.EMERGENT_PROVIDER || 'anthropic')
       setEmergentModel(s.envOverrides.EMERGENT_MODEL || 'claude-sonnet-4-5-20250929')
@@ -112,6 +114,7 @@ export function SettingsOverlay({ open, onClose }: Props) {
     window.jarviz.settings.set({
       llmBackend,
       whisperModel,
+      wakeWordMode,
       envOverrides: next,
     }).then(() => {
       setKeys(next)
@@ -252,6 +255,20 @@ export function SettingsOverlay({ open, onClose }: Props) {
           <option value="medium">medium  · ~1.5 GB · high accuracy</option>
           <option value="large-v3">large-v3  · ~3 GB · best accuracy</option>
         </select>
+
+        <SectionLabel>Wake word</SectionLabel>
+        <select
+          data-testid="settings-wake-word-mode"
+          value={wakeWordMode}
+          onChange={e => setWakeWordMode(e.target.value === 'picovoice' ? 'picovoice' : 'phrases')}
+          style={selectStyle}
+        >
+          <option value="phrases">Phrases — “hey jarviz” / “ok jarvis” (Silero + Whisper, recommended)</option>
+          <option value="picovoice">Picovoice — “Jarvis” keyword + access key + restart</option>
+        </select>
+        <div style={hintStyle}>
+          Use phrases if Picovoice does not work in your build. Restart the orb after changing this.
+        </div>
 
         <SectionLabel>Voice (TTS)</SectionLabel>
         <select

@@ -83,7 +83,8 @@ type ChunkCallback = (chunk: SpeechChunk) => void
  * so the renderer can show captions in cadence.
  */
 export async function streamSpeak(text: string, onChunk: ChunkCallback): Promise<void> {
-  const chunks = chunkForSpeech(text)
+  let chunks = chunkForSpeech(text)
+  if (chunks.length === 0 && text.trim()) chunks = [text.trim()]
   if (chunks.length === 0) return
 
   // Kick off all syntheses in parallel

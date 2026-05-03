@@ -1,5 +1,7 @@
 import { MicVAD } from '@ricky0123/vad-web'
+import { AudioManager } from '../audio/AudioManager'
 import { transcribeFloat32 } from './LocalSTT'
+import { VAD_DIST_CDN_BASE, vadOnnxWasmBasePath } from './onnxAssets'
 
 const WAKE_PHRASES = [
   'hey jarviz', 'ok jarviz', 'okay jarviz', 'jarviz',
@@ -14,7 +16,7 @@ const DEBOUNCE_MS = 500
 const WAKE_SAMPLE_RATE = 16000
 const MIN_WAKE_SEC = 0.35
 const MAX_WAKE_SEC = 5.5
-const MIN_WAKE_RMS = 0.012
+const MIN_WAKE_RMS = 0.008
 
 function editDistance(a: string, b: string): number {
   const m = a.length, n = b.length
@@ -83,11 +85,21 @@ export class LocalWakeWord {
     this.onSpeechDone  = onSpeechDone ?? null
 
     try {
-      const base = window.location.origin + '/'
+      /** Share app AudioContext so we can `resume()` it; MicVAD's own context often stays suspended in Electron → no VAD frames, no wake. */
+      const audioContext = AudioManager.shared().getContext()
+      await audioContext.resume().catch(() => {})
+
+      /** Silero + worklet from CDN; ORT wasm from same-origin `public/onnx-wasm` (see electron-vite sync plugin). */
       this.vad = await MicVAD.new({
-        baseAssetPath:    base,
-        onnxWASMBasePath: base,
+        baseAssetPath:    VAD_DIST_CDN_BASE,
+        onnxWASMBasePath: vadOnnxWasmBasePath(),
+        audioContext,
         startOnLoad: false,
+        ortConfig: (ort) => {
+          ort.env.logLevel = 'error'
+          const w = ort.env?.wasm as { numThreads?: number } | undefined
+          if (w) w.numThreads = 1
+        },
 
         onSpeechStart: () => {
           if (!this.running) return
@@ -97,14 +109,6 @@ export class LocalWakeWord {
 
         onSpeechEnd: (audio: Float32Array) => {
           if (!this.running) return
-
-          if (this.echoSuppressed) {
-            const peak = audio.reduce((m, v) => Math.max(m, Math.abs(v)), 0)
-            if (peak < ECHO_PEAK_THRESHOLD) {
-              this.onSpeechDone?.()
-              return
-            }
-          }
 
           const now = Date.now()
           const timeSinceLast = now - this.lastSpeechEndAt
@@ -185,7 +189,14 @@ export class LocalWakeWord {
   }
 
   async resume(): Promise<void> {
-    if (this.vad && this.running) await this.vad.start().catch(() => {})
+    if (!this.vad || !this.running) return
+    const ctx = AudioManager.shared().getContext()
+    await ctx.resume().catch(() => {})
+    try {
+      await this.vad.start()
+    } catch (e) {
+      this.log(`[WakeWord] MicVAD resume failed: ${e}`)
+    }
   }
 
   async stop(): Promise<void> {

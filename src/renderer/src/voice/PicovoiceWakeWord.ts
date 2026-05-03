@@ -8,6 +8,16 @@
 import { PorcupineWorker, BuiltInKeyword } from '@picovoice/porcupine-web'
 import { WebVoiceProcessor } from '@picovoice/web-voice-processor'
 
+/** Absolute URL beside `index.html` — `/porcupine_params.pv` breaks under `file://` (packaged Electron). */
+function porcupineModelPublicPath(): string {
+  if (typeof window === 'undefined') return 'porcupine_params.pv'
+  try {
+    return new URL('porcupine_params.pv', new URL('.', window.location.href)).href
+  } catch {
+    return 'porcupine_params.pv'
+  }
+}
+
 export class PicovoiceWakeWord {
   private worker: PorcupineWorker | null = null
   private subscribed = false
@@ -25,8 +35,12 @@ export class PicovoiceWakeWord {
         (detection) => {
           if (detection.label && this.onWake) this.onWake()
         },
-        // Default English model is bundled in the package
-        { publicPath: '/porcupine_params.pv' as never } as never,
+        { publicPath: porcupineModelPublicPath() },
+        {
+          processErrorCallback: (err) => {
+            console.warn('[Picovoice] process error:', err)
+          },
+        },
       )
       await WebVoiceProcessor.subscribe(this.worker)
       this.subscribed = true

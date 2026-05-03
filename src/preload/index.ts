@@ -26,6 +26,8 @@ const jarviz = {
   },
   onOpenSettings:    (cb: () => void) => sub('jarviz:open-settings', cb),
   onOpenTranscripts: (cb: () => void) => sub('jarviz:open-transcripts', cb),
+  /** Main → panel: switch tab after menu/tray shortcuts (must not use raw ipcRenderer in renderer). */
+  onPanelFocusSection: (cb: (section: string) => void) => sub('panel:focus-section', cb),
   onMiniChanged:     (cb: (mini: boolean) => void) => sub('orb:miniChanged', cb),
   onUpdaterStatus:   (cb: (s: { state: string; progress?: number; message?: string; info?: unknown }) => void) =>
     sub('updater:status', cb),
@@ -70,12 +72,14 @@ const jarviz = {
       envOverrides: Record<string, string>
       llmBackend: string
       whisperModel: string
+      wakeWordMode: 'phrases' | 'picovoice'
     }> => ipcRenderer.invoke('settings:get'),
 
     set: (patch: {
       envOverrides?: Record<string, string>
       llmBackend?: string
       whisperModel?: string
+      wakeWordMode?: 'phrases' | 'picovoice'
     }): Promise<boolean> => ipcRenderer.invoke('settings:set', patch),
   },
 
@@ -89,6 +93,35 @@ const jarviz = {
     newSession: (): Promise<boolean> => ipcRenderer.invoke('transcripts:newSession'),
   },
 
+  app: {
+    getLaunchAtLogin: (): Promise<boolean> => ipcRenderer.invoke('app:getLaunchAtLogin'),
+    setLaunchAtLogin: (on: boolean): Promise<boolean> => ipcRenderer.invoke('app:setLaunchAtLogin', on),
+    getJarvizEnabled: (): Promise<boolean> => ipcRenderer.invoke('app:getJarvizEnabled'),
+    setJarvizEnabled: (on: boolean): Promise<boolean> => ipcRenderer.invoke('app:setJarvizEnabled', on),
+    onJarvizSetEnabled: (cb: (enabled: boolean) => void) => sub<boolean>('jarviz:setEnabled', cb),
+  },
+
+  memory: {
+    list: (opts?: { kind?: string; projectRoot?: string; limit?: number }) => ipcRenderer.invoke('memory:list', opts),
+    search: (query: string, opts?: { kind?: string; projectRoot?: string; limit?: number }) =>
+      ipcRenderer.invoke('memory:search', { query, ...(opts ?? {}) }),
+    upsert: (item: { id?: string; kind: string; title: string; text: string; tags?: string[]; projectRoot?: string }) =>
+      ipcRenderer.invoke('memory:upsert', item),
+    delete: (id: string) => ipcRenderer.invoke('memory:delete', { id }),
+    syncEnabledGet: () => ipcRenderer.invoke('agent:memorySync:get'),
+    syncEnabledSet: (on: boolean) => ipcRenderer.invoke('agent:memorySync:set', on),
+  },
+
+  agentAdmin: {
+    permissionsGet: () => ipcRenderer.invoke('agent:permissions:get'),
+    permissionsSet: (next: unknown) => ipcRenderer.invoke('agent:permissions:set', next),
+    activityList: (limit?: number) => ipcRenderer.invoke('agent:activity:list', { limit }),
+  },
+
+  system: {
+    openMacPrivacyPane: (pane: string): Promise<boolean> => ipcRenderer.invoke('system:openMacPrivacyPane', pane),
+  },
+
   agent: {
     query: (text: string): Promise<{ text: string; audio: number[] | null; audioMime: string | null; streaming?: boolean }> =>
       invokeWithTimeout('agent:query', { text }),
@@ -99,6 +132,21 @@ const jarviz = {
 
     onSpeakChunk: (cb: (chunk: { index: number; total: number; text: string; audio: number[] | null; audioMime: string | null; isFinal: boolean }) => void) =>
       sub('agent:speakChunk', cb),
+  },
+
+  stt: {
+    whisperCppTranscribeWav: (wavBytes: number[]): Promise<{ text: string }> =>
+      invokeWithTimeout('stt:whispercpp:transcribeWav', { wavBytes }),
+  },
+
+  /** macOS tray popover only — uses same preload as orb/settings */
+  trayMenu: {
+    getEnabled: (): Promise<boolean> => ipcRenderer.invoke('app:getJarvizEnabled'),
+    setEnabled: (on: boolean): Promise<boolean> => ipcRenderer.invoke('app:setJarvizEnabled', on),
+    onEnabledFromMain: (cb: (enabled: boolean) => void) => sub<boolean>('jarviz:setEnabled', cb),
+    openSettings: (): void => { ipcRenderer.send('tray-menu:open-settings') },
+    quit: (): void => { ipcRenderer.send('tray-menu:quit') },
+    close: (): void => { ipcRenderer.send('tray-menu:close') },
   },
 }
 

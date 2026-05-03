@@ -40,16 +40,54 @@ vec3 iridescence(vec3 N, vec3 V, float time) {
   );
 }
 
+// Slow 2D rotation for coherent gradient drift (buttery motion, no fixed stripes)
+vec2 rot2(vec2 v, float a) {
+  float c = cos(a);
+  float s = sin(a);
+  return vec2(c * v.x - s * v.y, s * v.x + c * v.y);
+}
+
+vec3 driftSamplePos(vec3 p, float t) {
+  vec3 q = p;
+  q.xz = rot2(q.xz, t * 0.07);
+  q.xy = rot2(q.xy, t * 0.05);
+  q.yz = rot2(q.yz, t * 0.04);
+  return q;
+}
+
+// Remap sin to a softer plateau — less harsh banding, more molten blend
+float softWave(float phase) {
+  float s = sin(phase) * 0.5 + 0.5;
+  return smoothstep(0.12, 0.88, s);
+}
+
 // ─── 3-color oblique gradient (NO axis-aligned grid artifacts) ───────────────
 vec3 gradientWave(vec3 rawPos, float noise, float time, float speed) {
+  vec3 p = driftSamplePos(rawPos, time * speed * 0.35);
+  float t = time * speed;
   // Three oblique waves using dot products with non-axis-aligned directions
-  // This prevents any grid/quadrant pattern on the sphere surface
-  float wA = sin(dot(rawPos, vec3( 1.3,  2.1,  0.7)) + noise * 1.5 + time * speed) * 0.5 + 0.5;
-  float wB = sin(dot(rawPos, vec3(-1.1,  0.8,  2.0)) + noise * 1.2 + time * speed * 0.7 + 2.094) * 0.5 + 0.5;
-  float wC = sin(dot(rawPos, vec3( 0.9, -1.6,  1.4)) + noise * 1.8 + time * speed * 1.1 + 4.189) * 0.5 + 0.5;
+  float wA = softWave(dot(p, vec3( 1.3,  2.1,  0.7)) + noise * 1.2 + t);
+  float wB = softWave(dot(p, vec3(-1.1,  0.8,  2.0)) + noise * 1.0 + t * 0.72 + 2.094);
+  float wC = softWave(dot(p, vec3( 0.9, -1.6,  1.4)) + noise * 1.45 + t * 1.05 + 4.189);
+  // Gentle bias so mid-tones linger (creamier color travel)
+  wA = pow(max(wA, 1e-4), 0.88);
+  wB = pow(max(wB, 1e-4), 0.88);
+  wC = pow(max(wC, 1e-4), 0.88);
 
   float total = wA + wB + wC + 0.001;
   return uColorA * (wA / total) + uColorB * (wB / total) + uColorC * (wC / total);
+}
+
+// Soft sliding hotspot — reads as light moving through liquid inside the sphere
+vec3 liquidHotspot(vec3 rawPos, float time, float speed) {
+  vec3 dir = normalize(vec3(
+    sin(time * speed * 0.11 + 0.7),
+    cos(time * speed * 0.09 + 1.1),
+    sin(time * speed * 0.13 + 2.3)
+  ));
+  float h = max(0.0, dot(normalize(rawPos), dir));
+  h = pow(h, 5.0);
+  return mix(uColorA, uColorC, sin(time * speed * 0.08) * 0.5 + 0.5) * h * 0.20;
 }
 
 // ─── Sparkle / glitter (tiny twinkling points) ───────────────────────────────
@@ -80,6 +118,7 @@ void main() {
 
   // ── Gradient wave body color (smooth, no grid artifacts) ────────────────
   vec3 baseColor = gradientWave(vRawPos, vNoise, uTime, uGradientSpeed);
+  baseColor += liquidHotspot(vRawPos, uTime, uGradientSpeed);
   baseColor *= 1.0 + uAudioReactive * 0.5;
 
   // ── Subtle vein network ─────────────────────────────────────────────────
@@ -116,7 +155,8 @@ void main() {
   float fr_r = pow(1.0 - ndotv, uFresnelPower * (1.0 - ca * 0.3));
   float fr_b = pow(1.0 - ndotv, uFresnelPower * (1.0 + ca * 0.3));
   vec3 chromaRim = vec3(rimCol.r * fr_r, rimCol.g * fr, rimCol.b * fr_b);
-  body = mix(body, chromaRim * uRimIntensity, fr * 0.35);
+  // Outer rim ring removed (keep the orb "clean" without edge outline).
+  body = mix(body, chromaRim * uRimIntensity, fr * 0.0);
 
   // ── Center depth glow ───────────────────────────────────────────────────
   body += uColorB * pow(1.0 - fr, 4.5) * 0.12;

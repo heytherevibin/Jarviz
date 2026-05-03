@@ -2,13 +2,25 @@ import type Store from 'electron-store'
 
 type EnvOverrides = Record<string, string>
 
-const ENV_KEYS_MANAGED = [
+export const ENV_KEYS_MANAGED = [
   'EMERGENT_LLM_KEY', 'EMERGENT_PROVIDER', 'EMERGENT_MODEL',
   'ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'GEMINI_API_KEY',
   'GROQ_API_KEY', 'XAI_API_KEY',
   'TAVILY_API_KEY', 'ELEVENLABS_API_KEY', 'PICOVOICE_ACCESS_KEY',
   'GEMINI_TTS_VOICE',
-]
+] as const
+
+/** Keys the renderer reads for wake word / APIs — fill from `process.env` when store is empty (e.g. `.env` only). */
+export function getEffectiveEnvOverrides(store: Store): Record<string, string> {
+  const stored = store.get('envOverrides', {}) as EnvOverrides
+  const out: Record<string, string> = { ...stored }
+  for (const k of ENV_KEYS_MANAGED) {
+    if (out[k]?.trim()) continue
+    const fromEnv = process.env[k]?.trim()
+    if (fromEnv) out[k] = fromEnv
+  }
+  return out
+}
 
 /** Overlay persisted keys onto process.env (called after dotenv + whenever settings save). */
 export function mergeStoredEnv(store: Store): void {

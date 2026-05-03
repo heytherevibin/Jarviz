@@ -1,4 +1,4 @@
-import { cpSync, existsSync } from 'node:fs'
+import { cpSync, existsSync, mkdirSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -8,6 +8,32 @@ import type { Plugin } from 'vite'
 
 const workspaceRoot = dirname(fileURLToPath(import.meta.url))
 const trayAsset = join(workspaceRoot, 'resources/tray.png')
+
+/** Hoisted onnxruntime-web (vad-web); must match `onnxWASMBasePath` in renderer. */
+const onnxWasmSrcDir = join(workspaceRoot, 'node_modules/onnxruntime-web/dist')
+const onnxWasmPublicDir = join(workspaceRoot, 'src/renderer/public/onnx-wasm')
+const ONNX_WASM_BUNDLE_FILES = ['ort-wasm-simd-threaded.mjs', 'ort-wasm-simd-threaded.wasm'] as const
+
+function syncOnnxWasmToRendererPublic(): void {
+  if (!existsSync(onnxWasmSrcDir)) {
+    console.warn('[jarviz] onnxruntime-web dist missing — install deps; VAD WASM will fail')
+    return
+  }
+  mkdirSync(onnxWasmPublicDir, { recursive: true })
+  let n = 0
+  for (const name of ONNX_WASM_BUNDLE_FILES) {
+    const from = join(onnxWasmSrcDir, name)
+    if (!existsSync(from)) {
+      console.warn('[jarviz] missing ONNX file:', from)
+      continue
+    }
+    cpSync(from, join(onnxWasmPublicDir, name))
+    n++
+  }
+  if (n === ONNX_WASM_BUNDLE_FILES.length) {
+    console.log('[jarviz] synced ONNX wasm for VAD →', onnxWasmPublicDir)
+  }
+}
 
 /** Copy tray.png beside `out/main/index.js`; base64/decoding is unreliable vs `createFromPath` on macOS. */
 function copyTrayIntoMainOutPlugin(): Plugin {
@@ -28,6 +54,16 @@ function copyTrayIntoMainOutPlugin(): Plugin {
   }
 }
 
+/** Same-origin ORT wasm for MicVAD — Electron often rejects cross-origin `import()` of ort-wasm-*.mjs from CDNs. */
+function syncOnnxWasmPlugin(): Plugin {
+  return {
+    name: 'jarviz-sync-onnx-wasm-public',
+    buildStart() {
+      syncOnnxWasmToRendererPublic()
+    },
+  }
+}
+
 export default defineConfig({
   main: {
     plugins: [externalizeDepsPlugin(), copyTrayIntoMainOutPlugin()],
@@ -36,7 +72,7 @@ export default defineConfig({
     plugins: [externalizeDepsPlugin()],
   },
   renderer: {
-    plugins: [react()],
+    plugins: [react(), syncOnnxWasmPlugin()],
     assetsInclude: ['**/*.vert', '**/*.frag', '**/*.glsl'],
   },
 })

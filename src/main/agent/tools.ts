@@ -14,6 +14,7 @@ import { promisify } from 'util'
 import { hostname, platform, arch, release, totalmem, freemem, cpus, userInfo, homedir } from 'os'
 import { app, BrowserWindow, clipboard, Notification, shell, desktopCapturer, screen } from 'electron'
 import type { Tool } from '@anthropic-ai/sdk/resources/messages'
+import { activityAppend, memorySearch, memoryUpsert } from './context'
 
 const execAsync = promisify(exec)
 
@@ -61,6 +62,33 @@ async function fetchJSONRetry<T = unknown>(url: string, init?: RequestInit): Pro
 
 // ── Tool definitions ─────────────────────────────────────────────────────────
 export const TOOLS: Tool[] = [
+  {
+    name: 'memory_search',
+    description: 'Search Jarviz memory (preferences, project notes, snippets) and return relevant items.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        query: { type: 'string', description: 'Search query' },
+        limit: { type: 'number', description: 'Max results (default 10, max 50)' },
+      },
+      required: ['query'],
+    },
+  },
+  {
+    name: 'memory_save',
+    description: 'Save a memory item Jarviz should remember (profile/project/snippet).',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        kind: { type: 'string', description: 'profile | project | conversation | snippet' },
+        title: { type: 'string', description: 'Short title' },
+        text: { type: 'string', description: 'Main content to remember' },
+        tags: { type: 'array', items: { type: 'string' }, description: 'Optional tags' },
+        projectRoot: { type: 'string', description: 'Optional absolute project root for project-scoped memory' },
+      },
+      required: ['kind', 'title', 'text'],
+    },
+  },
   {
     name: 'web_search',
     description: 'Search the web for current information, news, or any factual query. Use Tavily if available, falls back to DuckDuckGo.',
@@ -328,6 +356,8 @@ export async function executeTool(name: string, input: ToolInput): Promise<ToolR
   try {
     const preview = JSON.stringify(input)
     console.log(`[Tools] ${name}(${preview.length > 280 ? `${preview.slice(0, 280)}…` : preview})`)
+    activityAppend({ type: 'tool', label: name, detail: preview.length > 500 ? `${preview.slice(0, 500)}…` : preview })
+
     switch (name) {
       case 'web_search':       return text(await webSearch(String(input.query ?? '')))
       case 'get_weather':      return text(await getWeather(String(input.location ?? '')))
@@ -357,6 +387,14 @@ export async function executeTool(name: string, input: ToolInput): Promise<ToolR
       case 'mouse_click':      return text(await mouseClick(Number(input.x), Number(input.y), String(input.button ?? 'left'), Boolean(input.double)))
       case 'mouse_move':       return text(await mouseMove(Number(input.x), Number(input.y)))
       case 'mouse_scroll':     return text(await mouseScroll(Number(input.amount ?? 0)))
+      case 'memory_search':    return text(JSON.stringify(memorySearch(String(input.query ?? ''), { limit: Number(input.limit ?? 10) }), null, 2))
+      case 'memory_save':      return text(JSON.stringify(memoryUpsert({
+        kind: (String(input.kind ?? 'snippet') as never),
+        title: String(input.title ?? 'Untitled'),
+        text: String(input.text ?? ''),
+        tags: Array.isArray(input.tags) ? (input.tags as unknown[]).map(String) : [],
+        projectRoot: input.projectRoot ? String(input.projectRoot) : undefined,
+      }), null, 2))
       default:                 return text(`Unknown tool: ${name}`)
     }
   } catch (e) {
