@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback } from 'react'
 import type { JarvizState } from './state/JarvizFSM'
+import { speakLocal } from './voice/LocalTTS'
 
 // ── Type declarations for preload API ───────────────────────────────────────
 declare global {
@@ -13,8 +14,9 @@ declare global {
         hide:           () => void
         ping:           () => void
         getDiagnostics: () => Promise<Diagnostics>
-        previewVoice:   (voice: string) => Promise<{ ok: boolean; error?: string }>
+        previewVoice:   (voice: string) => Promise<{ ok: boolean; error?: string; fallback?: 'browser'; note?: string }>
         onPreviewAudio: (cb: (a: { audio: number[]; mime: string }) => void) => () => void
+        onPreviewFallback: (cb: (p: { text: string }) => void) => () => void
       }
       settings: {
         get: () => Promise<{ envOverrides: Record<string, string>; llmBackend: string; whisperModel: string }>
@@ -186,6 +188,14 @@ export function PanelView() {
     })
   }, [])
 
+  // Browser Web Speech fallback — invoked by main when Gemini/ElevenLabs synth
+  // isn't available, so the preview button ALWAYS makes a sound.
+  useEffect(() => {
+    return window.jarviz.panel.onPreviewFallback(({ text }) => {
+      try { speakLocal(text) } catch (e) { console.error('[Panel] browser fallback failed', e) }
+    })
+  }, [])
+
   const loadSettings = useCallback(async () => {
     const [s, mini] = await Promise.all([window.jarviz.settings.get(), window.jarviz.getMini()])
     setLlmBackend(s.llmBackend || 'emergent')
@@ -232,8 +242,9 @@ export function PanelView() {
     try {
       await saveSettings()
       const r = await window.jarviz.panel.previewVoice(geminiVoice)
-      if (r.ok) setPreviewMsg({ kind: 'ok', text: 'Playing preview…' })
-      else      setPreviewMsg({ kind: 'err', text: r.error || 'Preview failed.' })
+      if (r.ok && r.fallback === 'browser') setPreviewMsg({ kind: 'ok', text: r.note || 'Playing browser voice preview…' })
+      else if (r.ok)                        setPreviewMsg({ kind: 'ok', text: 'Playing preview…' })
+      else                                  setPreviewMsg({ kind: 'err', text: r.error || 'Preview failed.' })
     } catch (e) {
       setPreviewMsg({ kind: 'err', text: (e as Error).message })
     } finally {

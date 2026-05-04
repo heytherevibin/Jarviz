@@ -60,9 +60,10 @@ const jarviz = {
       platform: string; uptimeMs: number; envHasGeminiKey: boolean; envHasEmergentKey: boolean;
       envGeminiVoice: string; llmBackend: string; memoryMB: number;
     }> => ipcRenderer.invoke('panel:getDiagnostics'),
-    previewVoice: (voice: string): Promise<{ ok: boolean; error?: string }> =>
+    previewVoice: (voice: string): Promise<{ ok: boolean; error?: string; fallback?: 'browser'; note?: string }> =>
       ipcRenderer.invoke('panel:previewVoice', voice),
     onPreviewAudio: (cb: (a: { audio: number[]; mime: string }) => void) => sub('panel:previewAudio', cb),
+    onPreviewFallback: (cb: (p: { text: string }) => void) => sub('panel:previewFallback', cb),
   },
 
   settings: {

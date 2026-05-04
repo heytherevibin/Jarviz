@@ -351,16 +351,20 @@ function registerMainProcessHandlers(): void {
       const prev = process.env.GEMINI_TTS_VOICE
       if (voice) process.env.GEMINI_TTS_VOICE = voice
       else delete process.env.GEMINI_TTS_VOICE
+      const PREVIEW_TEXT = 'Good evening — Jarviz online and ready.'
       try {
-        const r = await synthesize('Good evening — Jarviz online and ready.')
+        const r = await synthesize(PREVIEW_TEXT)
         if (!r) {
-          if (!process.env.GEMINI_API_KEY && voice) {
-            return { ok: false, error: 'No GEMINI_API_KEY set. Add it in the Keys tab — get a free one at aistudio.google.com/apikey.' }
-          }
-          if (!process.env.ELEVENLABS_API_KEY && !voice) {
-            return { ok: false, error: 'Voice is "Off" and no ElevenLabs key set — preview unavailable. The browser TTS plays during real conversations.' }
-          }
-          return { ok: false, error: 'Synthesis returned no audio (check API key validity).' }
+          // Synthesis failed (missing key / bad key / network) — silently fall
+          // back to browser Web Speech in the panel so the user ALWAYS hears a
+          // voice when previewing.
+          event.sender.send('panel:previewFallback', { text: PREVIEW_TEXT })
+          const reason = !process.env.GEMINI_API_KEY && voice
+            ? 'Using browser voice — add GEMINI_API_KEY for the premium "' + voice + '" voice.'
+            : !voice
+              ? 'Previewing browser voice (Gemini voice set to Off).'
+              : 'Using browser voice — Gemini synthesis failed.'
+          return { ok: true, fallback: 'browser', note: reason }
         }
         // Send to panel for playback
         event.sender.send('panel:previewAudio', {

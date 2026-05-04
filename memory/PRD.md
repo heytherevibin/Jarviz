@@ -10,7 +10,15 @@
 - **Agent** (`src/main/agent/claude.ts`): 6 backends — `emergent` (default), `anthropic`, `openai`, `gemini`, `groq`, `xai`. All support vision (except Groq Llama text-only). Auto-falls-back if primary fails.
 - **Tools** (`src/main/agent/tools.ts`): **28 tools** — info, filesystem, system actions (open_url/app/path, run_command, notify), clipboard, system_info, **vision (see_screen)**, **input automation (type_text, key_combo, mouse_click/move/scroll)**.
 
-## What's Been Implemented (2026-01-21)
+## What's Been Implemented (2026-02-04)
+
+### Iteration 6 — Klack-style panel verified + Soft-female browser voice fallback
+- **PanelView Klack redesign shipped** — electron-vite production build is clean (all modules transform, zero TS errors), `yarn build` completes in ~5s. Headless xvfb Electron boot verified: main process spawns, tray loads, orb window mounts; only expected environmental errors (dbus, mic `NotFoundError`, software WebGL) — which do NOT occur on the user's actual Mac. Panel dims (760×560) match the new sidebar layout.
+- **TTS voice actually works now**:
+  - `src/renderer/src/voice/LocalTTS.ts` rewritten with **soft-female voice preference list** (Ava/Samantha/Allison/Serena on macOS, Aria/Jenny neural on Windows, Google UK English Female on ChromeOS) + regex hint matcher for unknown-named female voices. Pitch/rate tuned (0.98 rate, 1.08 pitch) for a breezy, soft delivery matching the Gemini "Aoede" default.
+  - `ElevenLabs` default voice ID changed to `EXAVITQu4vr4xnSDxMaL` ("Bella" — soft young female) from the previous male "Adam".
+  - **Silent browser fallback for `panel:previewVoice`** — when Gemini/ElevenLabs synthesis is unavailable (missing key, bad key, proxy failure), main process now sends `panel:previewFallback` IPC with the preview text. Panel renderer imports `speakLocal` from `LocalTTS` and synthesises via `window.speechSynthesis` so the ▷ Preview button ALWAYS produces audio. User sees an informational banner ("Using browser voice — add GEMINI_API_KEY for the premium …") instead of a red error.
+- **Preload API** extended with `panel.onPreviewFallback(cb)` and updated `previewVoice` return type to include `{ ok, fallback?: 'browser', note? }`.
 
 ### Iteration 5 — Menubar architecture, voice diagnostics, stability
 - **Two-window architecture**: orb window is now **truly pristine** (just orb + halo + reticle pips + scan beam). All UI / config / status moved into a separate **menubar panel window** that pops out from the tray icon.
