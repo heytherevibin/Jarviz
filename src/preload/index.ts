@@ -64,9 +64,10 @@ const jarviz = {
     }> => ipcRenderer.invoke('panel:getDiagnostics'),
     /** macOS: true after `electron-liquid-glass` attached to the framed Settings window (not the orb). */
     getSettingsNativeLiquidGlass: (): Promise<boolean> => ipcRenderer.invoke('settings:getNativeLiquidGlass'),
-    previewVoice: (voice: string): Promise<{ ok: boolean; error?: string }> =>
+    previewVoice: (voice: string): Promise<{ ok: boolean; error?: string; fallback?: 'browser'; note?: string }> =>
       ipcRenderer.invoke('panel:previewVoice', voice),
     onPreviewAudio: (cb: (a: { audio: number[]; mime: string }) => void) => sub('panel:previewAudio', cb),
+    onPreviewFallback: (cb: (p: { text: string }) => void) => sub('panel:previewFallback', cb),
   },
 
   settings: {

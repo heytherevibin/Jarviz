@@ -33,7 +33,9 @@ export const GEMINI_VOICES = [
 const DEFAULT_GEMINI_VOICE = 'Charon'
 const GEMINI_TTS_MODEL = 'gemini-2.5-flash-preview-tts'
 
-const ELEVEN_DEFAULT_VOICE = 'pNInz6obpgDQGcFmaJgB'
+// ElevenLabs default — "Bella", soft young female (matches Aoede aesthetic).
+// Override per-install via ELEVENLABS_VOICE_ID env.
+const ELEVEN_DEFAULT_VOICE = 'EXAVITQu4vr4xnSDxMaL'
 
 export interface SynthesisResult {
   buffer: Buffer
