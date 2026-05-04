@@ -4,7 +4,7 @@
   "description": "Jarviz — Enterprise AI Agent",
   "main": "out/main/index.js",
   "scripts": {
-    "dev": "electron-vite dev",
+    "dev": "unset ELECTRON_RUN_AS_NODE; electron-vite dev",
     "dev:stop": "bash scripts/dev-stop.sh",
     "build": "electron-vite build",
     "preview": "electron-vite preview",
